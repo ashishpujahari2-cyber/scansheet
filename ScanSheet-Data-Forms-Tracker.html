@@ -1,0 +1,2484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
+<title>ScanSheet — Data &amp; Forms Tracker</title>
+<meta name="theme-color" content="#0b1220">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="description" content="Offline-capable data and custom-form tracker, synced to Google Sheets">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+
+<!-- ============================================================
+     EXTERNAL LIBRARIES (CDN, cached by the browser / service worker
+     after first load — app still needs one online load to fetch these.
+     Everything else in this file is fully self-contained.)
+============================================================= -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+
+<style>
+/* =====================================================================
+   DESIGN TOKENS
+   Theme: "operations console" — a scanner / viewfinder visual language.
+   Signature element: corner-bracket viewframe (⌐ ¬) used on cards,
+   the nav, and the camera overlay — echoes the app's core action.
+===================================================================== */
+:root{
+  --font-display:'Space Grotesk',system-ui,sans-serif;
+  --font-body:'Inter',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,monospace;
+
+  --radius:14px;
+  --radius-sm:8px;
+  --gap:12px;
+  --nav-h:64px;
+  --topbar-h:56px;
+
+  --status-pending:#f59e0b;
+  --status-completed:#10b981;
+  --status-rejected:#ef4444;
+  --status-hold:#6b7280;
+  --status-followup:#3b82f6;
+  --status-verified:#8b5cf6;
+
+  --font-scale:1;
+}
+
+/* ---- Dark theme (default) ---- */
+[data-theme="dark"]{
+  --bg:#0b1220;
+  --bg-grad:radial-gradient(1200px 800px at 10% -10%, #132036 0%, #0b1220 55%), radial-gradient(900px 700px at 110% 10%, #0e2a2f 0%, transparent 60%);
+  --surface:rgba(255,255,255,0.055);
+  --surface-strong:rgba(255,255,255,0.09);
+  --border:rgba(255,255,255,0.09);
+  --text:#e8edf7;
+  --text-dim:#94a3b8;
+  --text-faint:#5b6b84;
+  --accent:#22d3ee;
+  --accent-2:#818cf8;
+  --shadow:0 8px 30px rgba(0,0,0,0.35);
+  --input-bg:rgba(255,255,255,0.06);
+  --danger:#ef4444;
+  --success:#10b981;
+}
+/* ---- Light theme ---- */
+[data-theme="light"]{
+  --bg:#eef2f7;
+  --bg-grad:radial-gradient(1200px 800px at 10% -10%, #ffffff 0%, #eef2f7 55%), radial-gradient(900px 700px at 110% 10%, #e3f6f8 0%, transparent 60%);
+  --surface:rgba(255,255,255,0.65);
+  --surface-strong:rgba(255,255,255,0.85);
+  --border:rgba(15,23,42,0.09);
+  --text:#0f172a;
+  --text-dim:#475569;
+  --text-faint:#94a3b8;
+  --accent:#0891b2;
+  --accent-2:#6366f1;
+  --shadow:0 8px 24px rgba(15,23,42,0.10);
+  --input-bg:rgba(15,23,42,0.04);
+  --danger:#dc2626;
+  --success:#059669;
+}
+
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+html,body{height:100%;}
+body{
+  margin:0;
+  font-family:var(--font-body);
+  background:var(--bg-grad), var(--bg);
+  background-attachment:fixed;
+  color:var(--text);
+  font-size:calc(15px * var(--font-scale));
+  line-height:1.45;
+  padding-bottom:calc(20px + env(safe-area-inset-bottom));
+  overflow-x:hidden;
+  transition:background .25s ease, color .25s ease;
+}
+h1,h2,h3,h4{font-family:var(--font-display); margin:0 0 8px; letter-spacing:-0.01em;}
+button, select, input, textarea{font-family:inherit; font-size:inherit; color:inherit;}
+::selection{background:var(--accent); color:#04141a;}
+a{color:var(--accent);}
+
+/* Scrollbars */
+*::-webkit-scrollbar{width:8px; height:8px;}
+*::-webkit-scrollbar-thumb{background:var(--border); border-radius:8px;}
+
+/* ---------------------------------------------------------------
+   Glass card — the core surface unit throughout the app
+---------------------------------------------------------------- */
+.card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  backdrop-filter:blur(18px) saturate(140%);
+  -webkit-backdrop-filter:blur(18px) saturate(140%);
+  box-shadow:var(--shadow);
+  padding:16px;
+  position:relative;
+}
+/* Corner-bracket signature motif, used on key cards */
+.bracket{position:relative;}
+.bracket::before,.bracket::after{
+  content:"";
+  position:absolute; width:14px; height:14px;
+  border:2px solid var(--accent);
+  opacity:.8;
+}
+.bracket::before{top:-1px; left:-1px; border-right:none; border-bottom:none; border-top-left-radius:6px;}
+.bracket::after{bottom:-1px; right:-1px; border-left:none; border-top:none; border-bottom-right-radius:6px;}
+
+/* ---------------------------------------------------------------
+   Top bar
+---------------------------------------------------------------- */
+.topbar{
+  position:sticky; top:0; z-index:40;
+  height:calc(var(--topbar-h) + env(safe-area-inset-top));
+  padding-top:env(safe-area-inset-top);
+  display:flex; align-items:center; justify-content:space-between;
+  padding-left:16px; padding-right:16px;
+  background:var(--surface-strong);
+  backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);
+}
+.brand{display:flex; align-items:center; gap:10px; font-family:var(--font-display); font-weight:700; font-size:1.05rem;}
+.brand .mark{
+  width:28px; height:28px; border-radius:8px;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  display:flex; align-items:center; justify-content:center;
+  font-size:14px; color:#04141a; font-weight:800;
+}
+.topbar-actions{display:flex; gap:8px; align-items:center;}
+.icon-btn{
+  width:36px; height:36px; border-radius:10px;
+  border:1px solid var(--border); background:var(--input-bg);
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+  color:var(--text); font-size:16px;
+}
+.icon-btn:active{transform:scale(.92);}
+
+/* ---------------------------------------------------------------
+   Side drawer navigation (replaces the old bottom tab bar so more
+   vertical space on the phone screen goes to actual content)
+---------------------------------------------------------------- */
+.drawer-backdrop{
+  position:fixed; inset:0; z-index:59; background:rgba(0,0,0,.5);
+  opacity:0; pointer-events:none; transition:opacity .22s ease;
+}
+.drawer-backdrop.open{opacity:1; pointer-events:auto;}
+
+.side-drawer{
+  position:fixed; top:0; bottom:0; left:0; z-index:60;
+  width:min(78vw, 300px); height:100%;
+  background:var(--surface-strong);
+  backdrop-filter:blur(22px) saturate(140%);
+  border-right:1px solid var(--border);
+  transform:translateX(-105%);
+  transition:transform .24s cubic-bezier(.4,0,.2,1);
+  display:flex; flex-direction:column;
+  padding-top:env(safe-area-inset-top);
+  padding-bottom:env(safe-area-inset-bottom);
+  box-shadow:2px 0 24px rgba(0,0,0,.25);
+}
+.side-drawer.open{transform:translateX(0);}
+.drawer-header{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:16px; border-bottom:1px solid var(--border);
+}
+.drawer-list{flex:1; overflow-y:auto; padding:8px;}
+.drawer-btn{
+  width:100%; display:flex; align-items:center; gap:14px;
+  background:none; border:none; cursor:pointer; color:var(--text-dim);
+  padding:13px 14px; border-radius:12px; font-size:.92rem; font-weight:600;
+  text-align:left; margin-bottom:2px;
+}
+.drawer-btn .ic{font-size:19px; width:22px; text-align:center; flex-shrink:0;}
+.drawer-btn.active{color:var(--accent); background:var(--input-bg);}
+.drawer-btn.active .ic{filter:drop-shadow(0 0 8px var(--accent));}
+.drawer-btn:active{transform:scale(.98);}
+.drawer-footer{padding:14px 16px; border-top:1px solid var(--border);}
+
+/* ---------------------------------------------------------------
+   Page layout
+---------------------------------------------------------------- */
+.page{display:none; padding:14px; max-width:1100px; margin:0 auto;}
+.page.active{display:block; animation:fadeIn .18s ease;}
+@keyframes fadeIn{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;}}
+.section-title{display:flex; align-items:center; justify-content:space-between; margin:18px 0 10px;}
+.section-title h2{font-size:1rem; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim);}
+.grid-2{display:grid; grid-template-columns:1fr 1fr; gap:var(--gap);}
+.grid-3{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--gap);}
+@media (max-width:640px){.grid-3{grid-template-columns:repeat(2,1fr);}}
+@media (max-width:560px){.grid-2{grid-template-columns:1fr;} .chart-card canvas{max-height:200px;}}
+@media (min-width:900px){.grid-4{display:grid; grid-template-columns:repeat(4,1fr); gap:var(--gap);}}
+
+/* ---------------------------------------------------------------
+   Buttons
+---------------------------------------------------------------- */
+.btn{
+  border:1px solid var(--border); background:var(--input-bg); color:var(--text);
+  padding:10px 16px; border-radius:10px; cursor:pointer; font-weight:600; font-size:.88rem;
+  display:inline-flex; align-items:center; gap:6px; justify-content:center;
+  min-height:44px; /* touch target */
+}
+.btn:active{transform:scale(.97);}
+.btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:#04141a; border:none;}
+.btn-danger{background:var(--danger); color:#fff; border:none;}
+.btn-ghost{background:transparent;}
+.btn-sm{padding:7px 12px; min-height:34px; font-size:.8rem; border-radius:8px;}
+.btn-block{width:100%;}
+.btn-row{display:flex; gap:8px; flex-wrap:wrap;}
+
+/* ---------------------------------------------------------------
+   Dashboard stat cards
+---------------------------------------------------------------- */
+.stat-card{padding:14px;}
+.stat-card .num{font-family:var(--font-mono); font-size:1.7rem; font-weight:700;}
+.stat-card .label{color:var(--text-dim); font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; margin-top:2px;}
+.stat-card .bar{height:4px; border-radius:4px; background:var(--border); margin-top:10px; overflow:hidden;}
+.stat-card .bar > i{display:block; height:100%; border-radius:4px;}
+.chart-card{padding:14px; margin-bottom:var(--gap);}
+.chart-card canvas{max-height:240px;}
+
+/* status pill */
+.pill{
+  display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:999px;
+  font-size:.72rem; font-weight:700; color:#fff; white-space:nowrap; cursor:pointer; user-select:none;
+  border:1px solid rgba(255,255,255,.25);
+}
+.pill .dot{width:6px; height:6px; border-radius:50%; background:#fff; opacity:.85;}
+
+/* ---------------------------------------------------------------
+   Data sheet / grid
+---------------------------------------------------------------- */
+.toolbar{display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px;}
+.toolbar input[type=text], .toolbar select, .field-input{
+  background:var(--input-bg); border:1px solid var(--border); border-radius:8px;
+  padding:9px 10px; color:var(--text); min-height:40px;
+}
+.toolbar input[type=text]{flex:1; min-width:140px;}
+
+.grid-shell{
+  border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--surface);
+}
+.grid-scroll{overflow:auto; position:relative;}
+.grid-head-row, .grid-row{display:flex; align-items:stretch;}
+.grid-head-row{
+  background:var(--surface-strong); position:sticky; top:0; z-index:5; font-weight:700; font-size:.74rem;
+  text-transform:uppercase; letter-spacing:.04em; color:var(--text-dim); border-bottom:1px solid var(--border);
+}
+.gcell{
+  flex-shrink:0; padding:9px 10px; border-right:1px solid var(--border);
+  display:flex; align-items:center; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+  font-family:var(--font-mono); font-size:.82rem;
+}
+.grid-row{border-bottom:1px solid var(--border);}
+.grid-row:nth-child(even){background:rgba(127,127,127,0.035);}
+.grid-row.selected{background:rgba(34,211,238,.10);}
+.gcell input{width:100%; background:transparent; border:none; outline:none; color:var(--text); font-family:inherit; font-size:inherit;}
+.gcell.select-col{width:40px; justify-content:center;}
+.gcell.status-col{width:132px;}
+.col-w{width:130px;}
+.gcell.sortable{cursor:pointer;}
+.spacer-row{width:100%;}
+
+.chip{display:inline-block; padding:2px 7px; margin:1px; border-radius:6px; background:var(--input-bg); font-size:.7rem; border:1px solid var(--border);}
+
+/* Modal */
+.modal-backdrop{position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:100; display:flex; align-items:flex-end; justify-content:center;}
+@media (min-width:640px){.modal-backdrop{align-items:center;}}
+.modal{
+  width:100%; max-width:560px; max-height:88vh; overflow:auto;
+  background:var(--bg); border:1px solid var(--border); border-radius:18px 18px 0 0; padding:18px;
+  box-shadow:var(--shadow);
+}
+@media (min-width:640px){.modal{border-radius:16px;}}
+.modal-header{display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;}
+.field{margin-bottom:12px;}
+.field label{display:block; font-size:.75rem; color:var(--text-dim); margin-bottom:5px; text-transform:uppercase; letter-spacing:.04em;}
+.field-input{width:100%;}
+
+/* Toast */
+#toast-host{position:fixed; top:calc(var(--topbar-h) + 12px + env(safe-area-inset-top)); left:0; right:0; display:flex; flex-direction:column; align-items:center; gap:8px; z-index:200; pointer-events:none;}
+.toast{background:var(--surface-strong); border:1px solid var(--border); backdrop-filter:blur(14px); padding:10px 16px; border-radius:10px; font-size:.85rem; box-shadow:var(--shadow); animation:toastIn .2s ease;}
+@keyframes toastIn{from{opacity:0; transform:translateY(-6px);} to{opacity:1; transform:none;}}
+
+/* misc */
+.muted{color:var(--text-dim);}
+.small{font-size:.78rem;}
+.center{text-align:center;}
+.hidden{display:none !important;}
+.spinner{width:18px; height:18px; border-radius:50%; border:2.5px solid var(--border); border-top-color:var(--accent); animation:spin .7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.swipe-hint{font-size:.7rem; color:var(--text-faint);}
+.empty-state{padding:40px 16px; text-align:center; color:var(--text-dim);}
+.empty-state .ic{font-size:34px; margin-bottom:8px;}
+.color-row{display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border);}
+.color-row input[type=color]{width:44px; height:32px; border:none; background:none; border-radius:6px;}
+label.switch{position:relative; display:inline-block; width:44px; height:26px;}
+label.switch input{opacity:0; width:0; height:0;}
+.slider-tg{position:absolute; cursor:pointer; inset:0; background:var(--border); border-radius:26px; transition:.2s;}
+.slider-tg::before{content:""; position:absolute; height:20px; width:20px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s;}
+input:checked + .slider-tg{background:var(--accent);}
+input:checked + .slider-tg::before{transform:translateX(18px);}
+</style>
+</head>
+<body data-theme="dark">
+
+<div id="toast-host"></div>
+
+<!-- =================== TOP BAR =================== -->
+<header class="topbar">
+  <div style="display:flex; align-items:center; gap:10px;">
+    <button class="icon-btn" id="btnMenu" title="Menu" aria-label="Open menu">☰</button>
+    <div class="brand"><span class="mark">⌐¬</span> ScanSheet</div>
+  </div>
+  <div class="topbar-actions">
+    <button class="icon-btn" id="btnUndo" title="Undo">↺</button>
+    <button class="icon-btn" id="btnRedo" title="Redo">↻</button>
+    <button class="icon-btn" id="btnGsStatus" title="Google Sync status">☁️</button>
+    <button class="icon-btn" id="btnThemeToggle" title="Toggle theme">🌙</button>
+  </div>
+</header>
+
+<!-- =================== SIDE DRAWER NAV =================== -->
+<div class="drawer-backdrop" id="drawerBackdrop"></div>
+<nav class="side-drawer" id="sideDrawer">
+  <div class="drawer-header">
+    <div class="brand"><span class="mark">⌐¬</span> ScanSheet</div>
+    <button class="icon-btn" id="btnDrawerClose" aria-label="Close menu">✕</button>
+  </div>
+  <div class="drawer-list">
+    <button class="drawer-btn active" data-nav="dashboard"><span class="ic">▦</span>Dashboard</button>
+    <button class="drawer-btn" data-nav="sheet"><span class="ic">▤</span>Data Sheet</button>
+    <button class="drawer-btn" data-nav="reports"><span class="ic">◔</span>Reports</button>
+    <button class="drawer-btn" data-nav="forms"><span class="ic">🧩</span>Forms</button>
+    <button class="drawer-btn" data-nav="settings"><span class="ic">⚙</span>Settings</button>
+  </div>
+  <div class="drawer-footer small muted">ScanSheet · works fully offline</div>
+</nav>
+
+<!-- =================== PAGES =================== -->
+<main>
+
+  <!-- ---------- DASHBOARD ---------- -->
+  <section class="page active" id="page-dashboard">
+    <div class="section-title"><h2>Overview</h2><span class="muted small" id="dashUpdated"></span></div>
+
+    <div class="field" style="max-width:320px;">
+      <label>Showing data for</label>
+      <select id="dashFormFilter" class="field-input"></select>
+    </div>
+
+    <div class="grid-3" id="dashStats"></div>
+
+    <div class="section-title"><h2>Status Distribution</h2></div>
+    <div class="card chart-card"><canvas id="chartPie"></canvas></div>
+
+    <div class="grid-2">
+      <div class="card chart-card"><h3 class="small muted" style="margin-bottom:8px;">Records / Day (14d)</h3><canvas id="chartBar"></canvas></div>
+      <div class="card chart-card"><h3 class="small muted" style="margin-bottom:8px;">Completion Trend</h3><canvas id="chartLine"></canvas></div>
+    </div>
+
+    <div class="section-title"><h2>Quick Actions</h2></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btnNewEntryDash">📝 New entry (form)</button>
+      <button class="btn" id="btnNewFormDash">🧩 Create a form</button>
+      <button class="btn" data-nav="sheet">📋 Open data sheet</button>
+      <button class="btn" data-nav="reports">📊 View reports</button>
+    </div>
+  </section>
+
+  <!-- ---------- DATA SHEET ---------- -->
+  <section class="page" id="page-sheet">
+    <div class="section-title"><h2>Data Sheet</h2><span class="muted small" id="sheetCount"></span></div>
+
+    <div class="toolbar">
+      <input type="text" id="searchBox" placeholder="🔎 Search all columns, status, remarks, tags…">
+      <select id="filterStatus"><option value="">All statuses</option></select>
+      <button class="btn btn-sm btn-primary" id="btnNewEntrySheet">📝 New entry (form)</button>
+      <button class="btn btn-sm" id="btnAddRow">+ Row</button>
+      <button class="btn btn-sm" id="btnAddCol">+ Column</button>
+      <button class="btn btn-sm" id="btnBulkEdit">Bulk edit</button>
+      <button class="btn btn-sm btn-danger" id="btnDeleteSel">Delete sel.</button>
+    </div>
+    <div class="toolbar">
+      <span class="small muted">Export:</span>
+      <button class="btn btn-sm" id="btnExpCSV">CSV</button>
+      <button class="btn btn-sm" id="btnExpXLSX">Excel</button>
+      <button class="btn btn-sm" id="btnExpPDF">PDF</button>
+      <button class="btn btn-sm" id="btnExpJSON">JSON backup</button>
+      <label class="btn btn-sm" style="cursor:pointer;">Import JSON<input type="file" id="importJSON" accept=".json" class="hidden"></label>
+    </div>
+
+    <div class="grid-shell">
+      <div class="grid-scroll" id="mainGridScroll" style="height:60vh;"></div>
+    </div>
+    <p class="small swipe-hint" style="margin-top:6px;">Tip: tap a status pill to cycle status · swipe a row left/right on mobile · double-tap a cell to edit</p>
+  </section>
+
+  <!-- ---------- REPORTS ---------- -->
+  <section class="page" id="page-reports">
+    <div class="section-title"><h2>Reports</h2></div>
+
+    <div class="card" style="margin-bottom:var(--gap);">
+      <div class="toolbar" style="margin-bottom:0;">
+        <input type="date" id="repFrom" class="field-input">
+        <input type="date" id="repTo" class="field-input">
+        <select id="repStatus" class="field-input"><option value="">All statuses</option></select>
+        <input type="text" id="repKeyword" placeholder="Keyword…" class="field-input" style="flex:1; min-width:120px;">
+        <button class="btn btn-sm btn-primary" id="btnRepApply">Apply</button>
+        <button class="btn btn-sm" id="btnRepReset">Reset</button>
+      </div>
+    </div>
+
+    <div class="grid-3" id="repSummary"></div>
+
+    <div class="grid-2" style="margin-top:var(--gap);">
+      <div class="card chart-card"><h3 class="small muted">Status distribution</h3><canvas id="repPie"></canvas></div>
+      <div class="card chart-card"><h3 class="small muted">Daily trend</h3><canvas id="repDaily"></canvas></div>
+    </div>
+    <div class="grid-2">
+      <div class="card chart-card"><h3 class="small muted">Weekly trend</h3><canvas id="repWeekly"></canvas></div>
+      <div class="card chart-card"><h3 class="small muted">Monthly trend</h3><canvas id="repMonthly"></canvas></div>
+    </div>
+
+    <div class="section-title"><h2>Export report</h2></div>
+    <div class="btn-row">
+      <button class="btn" id="btnRepPDF">📄 PDF</button>
+      <button class="btn" id="btnRepXLSX">📊 Excel</button>
+      <button class="btn" id="btnRepCSV">🧾 CSV</button>
+      <button class="btn" id="btnRepPrint">🖨️ Print</button>
+    </div>
+  </section>
+
+  <!-- ---------- SETTINGS ---------- -->
+  <section class="page" id="page-forms">
+    <div id="formsListView">
+      <div class="section-title"><h2>Custom Forms</h2><button class="btn btn-sm btn-primary" id="btnNewForm">+ New Form</button></div>
+      <p class="small muted">Build a form once with the fields you need, then fill it as many times as you like. Every form gets its own table — <strong>Status</strong> and <strong>Comment</strong> are added automatically to every entry.</p>
+      <div id="formsList" style="margin-top:10px;"></div>
+    </div>
+
+    <div id="formTableView" class="hidden">
+      <div class="section-title">
+        <h2 id="formTableTitle">Form</h2>
+        <button class="btn btn-sm" id="btnBackToForms">← All forms</button>
+      </div>
+      <div class="toolbar">
+        <input type="text" id="formSearchBox" placeholder="🔎 Search this form's entries…">
+        <button class="btn btn-sm btn-primary" id="btnFillFormFromTable">📝 Fill form</button>
+      </div>
+      <div class="toolbar">
+        <span class="small muted">Export:</span>
+        <button class="btn btn-sm" id="btnFormExpCSV">CSV</button>
+        <button class="btn btn-sm" id="btnFormExpXLSX">Excel</button>
+        <button class="btn btn-sm" id="btnFormExpPDF">PDF</button>
+        <button class="btn btn-sm" id="btnFormDelete" style="margin-left:auto;">🗑 Delete form</button>
+      </div>
+      <div class="grid-shell">
+        <div class="grid-scroll" id="formGridScroll" style="height:58vh;"></div>
+      </div>
+      <p class="small swipe-hint" style="margin-top:6px;">Tip: tap a status pill to cycle status · swipe a row on mobile</p>
+    </div>
+  </section>
+
+  <section class="page" id="page-settings">
+    <div class="section-title"><h2>Settings</h2></div>
+
+    <div class="card" style="margin-bottom:var(--gap);">
+      <h3 class="small muted" style="margin-bottom:10px;">Appearance</h3>
+      <div class="color-row"><span>Dark mode</span>
+        <label class="switch"><input type="checkbox" id="toggleDark"><span class="slider-tg"></span></label>
+      </div>
+      <div class="field" style="margin-top:12px;">
+        <label>Font size</label>
+        <input type="range" id="fontSize" min="0.85" max="1.25" step="0.05" style="width:100%;">
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:var(--gap);">
+      <h3 class="small muted" style="margin-bottom:2px;">Manage Statuses</h3>
+      <p class="small muted" style="margin-bottom:8px;">Add, rename, recolor, reorder, or remove statuses to match your workflow.</p>
+      <div id="statusColorList"></div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn btn-sm btn-primary" id="btnAddStatus">+ Add status</button>
+        <button class="btn btn-sm" id="btnResetColors">Reset to default</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:var(--gap);">
+      <div class="field"><label>Default status for new rows</label>
+        <select id="defaultStatus" class="field-input"></select>
+      </div>
+      <div class="field"><label>Auto-save interval (seconds)</label>
+        <input type="number" id="autoSaveInterval" class="field-input" min="1" max="60">
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:var(--gap);">
+      <h3 class="small muted" style="margin-bottom:2px;">Google Sheets Sync</h3>
+      <p class="small muted" style="margin-bottom:10px;">Connects to a Google Apps Script Web App you deploy — it writes every record, including all your custom Forms and their entries, into a Google Sheet (one tab per form). See the included setup guide for the exact script.</p>
+      <p class="small" id="gsConsoleNote" style="display:none; margin-bottom:10px; color:var(--accent);"></p>
+
+      <div class="field"><label>Apps Script Web App URL</label>
+        <input type="url" id="gsUrl" class="field-input" placeholder="https://script.google.com/macros/s/…/exec">
+      </div>
+      <div class="field"><label>Shared token <span class="muted" style="text-transform:none; font-weight:400;">(must match the script's SYNC_TOKEN, if set)</span></label>
+        <input type="password" id="gsToken" class="field-input" placeholder="optional but recommended">
+      </div>
+
+      <div class="color-row"><span>Auto-sync on every change</span>
+        <label class="switch"><input type="checkbox" id="gsAutoSync"><span class="slider-tg"></span></label>
+      </div>
+
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn btn-sm" id="btnGsTest">🔌 Test connection</button>
+        <button class="btn btn-sm btn-primary" id="btnGsPush">⬆ Sync now</button>
+        <button class="btn btn-sm" id="btnGsPull">⬇ Pull from Sheets</button>
+      </div>
+      <p class="small muted" id="gsStatusLine" style="margin-top:10px;">Not connected yet.</p>
+    </div>
+
+    <div class="card">
+      <h3 class="small muted" style="margin-bottom:10px;">Data</h3>
+      <div class="btn-row">
+        <button class="btn" id="btnBackup">⬇ Backup data</button>
+        <label class="btn" style="cursor:pointer;">⬆ Restore data<input type="file" id="restoreInput" accept=".json" class="hidden"></label>
+        <button class="btn btn-danger" id="btnClearData">🗑 Clear all data</button>
+      </div>
+      <p class="small muted" style="margin-top:10px;">Storage engine: IndexedDB — data persists on this device between sessions. Google Sync above is optional and separate from this local backup.</p>
+    </div>
+  </section>
+
+</main>
+
+<!-- generic modal host -->
+<div id="modalHost"></div>
+
+<script>
+/* =====================================================================
+   ScanSheet — self-contained table scanner & document tracker
+   All logic is namespaced below to keep things modular.
+===================================================================== */
+'use strict';
+
+/* ---------------------------------------------------------------
+   0. CONSTANTS
+---------------------------------------------------------------- */
+/* Default status set — seeds Settings on first run. After that,
+   the live list of statuses lives in App.settings.statuses and can
+   be added to, renamed, recolored, reordered, or deleted freely. */
+const DEFAULT_STATUSES = [
+  {name:'Pending',    color:'#f59e0b'},
+  {name:'Completed',  color:'#10b981'},
+  {name:'Rejected',   color:'#ef4444'},
+  {name:'Hold',       color:'#6b7280'},
+  {name:'Follow Up',  color:'#3b82f6'},
+  {name:'Verified',   color:'#8b5cf6'},
+];
+const FALLBACK_STATUS_COLOR = '#64748b';
+function getStatusNames(){ return App.settings.statuses.map(s=>s.name); }
+const PRIORITIES = ['Low','Medium','High','Urgent'];
+const ROW_H = 42;
+
+function toast(msg, ms=2200){
+  const host = document.getElementById('toast-host');
+  const t = document.createElement('div');
+  t.className='toast'; t.textContent=msg;
+  host.appendChild(t);
+  setTimeout(()=>{t.style.opacity='0'; t.style.transition='opacity .25s'; setTimeout(()=>t.remove(),250);}, ms);
+}
+function vibrate(ms=15){ if(navigator.vibrate){ try{navigator.vibrate(ms);}catch(e){} } }
+function uid(){ return 'r'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+function pad2(n){ return String(n).padStart(2,'0'); }
+function fmtDate(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
+function fmtTime(d){ return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; }
+
+/* ---------------------------------------------------------------
+   1. STORAGE LAYER — IndexedDB wrapper (falls back to localStorage
+   if IndexedDB is unavailable, e.g. some in-app browsers)
+---------------------------------------------------------------- */
+const DB = (() => {
+  let db=null, ready=false, useLocalFallback=false;
+  const DB_NAME='ScanSheetDB', DB_VER=1;
+
+  function open(){
+    return new Promise((resolve)=>{
+      if(!window.indexedDB){ useLocalFallback=true; resolve(); return; }
+      const req = indexedDB.open(DB_NAME, DB_VER);
+      req.onupgradeneeded = (e)=>{
+        const d = e.target.result;
+        if(!d.objectStoreNames.contains('records')) d.createObjectStore('records',{keyPath:'id'});
+        if(!d.objectStoreNames.contains('meta')) d.createObjectStore('meta',{keyPath:'key'});
+      };
+      req.onsuccess = (e)=>{ db=e.target.result; ready=true; resolve(); };
+      req.onerror = ()=>{ useLocalFallback=true; resolve(); };
+    });
+  }
+
+  function tx(store, mode){ return db.transaction(store, mode).objectStore(store); }
+
+  async function getAllRecords(){
+    if(useLocalFallback){ return JSON.parse(localStorage.getItem('ss_records')||'[]'); }
+    return new Promise((resolve)=>{
+      const out=[]; const req = tx('records','readonly').openCursor();
+      req.onsuccess = (e)=>{ const c=e.target.result; if(c){ out.push(c.value); c.continue(); } else resolve(out); };
+      req.onerror = ()=>resolve(out);
+    });
+  }
+  async function putRecord(rec){
+    if(useLocalFallback){
+      const all = JSON.parse(localStorage.getItem('ss_records')||'[]');
+      const i = all.findIndex(r=>r.id===rec.id);
+      if(i>=0) all[i]=rec; else all.push(rec);
+      localStorage.setItem('ss_records', JSON.stringify(all));
+      return;
+    }
+    return new Promise((resolve)=>{ const r=tx('records','readwrite').put(rec); r.onsuccess=()=>resolve(); r.onerror=()=>resolve(); });
+  }
+  async function putRecords(recs){
+    if(useLocalFallback){
+      const all = JSON.parse(localStorage.getItem('ss_records')||'[]');
+      recs.forEach(rec=>{ const i=all.findIndex(r=>r.id===rec.id); if(i>=0) all[i]=rec; else all.push(rec); });
+      localStorage.setItem('ss_records', JSON.stringify(all));
+      return;
+    }
+    return new Promise((resolve)=>{
+      const s = tx('records','readwrite');
+      recs.forEach(rec=>s.put(rec));
+      s.transaction.oncomplete=()=>resolve();
+      s.transaction.onerror=()=>resolve();
+    });
+  }
+  async function deleteRecord(id){
+    if(useLocalFallback){
+      let all = JSON.parse(localStorage.getItem('ss_records')||'[]');
+      all = all.filter(r=>r.id!==id);
+      localStorage.setItem('ss_records', JSON.stringify(all));
+      return;
+    }
+    return new Promise((resolve)=>{ const r=tx('records','readwrite').delete(id); r.onsuccess=()=>resolve(); r.onerror=()=>resolve(); });
+  }
+  async function deleteRecords(ids){
+    if(useLocalFallback){
+      let all = JSON.parse(localStorage.getItem('ss_records')||'[]');
+      const set = new Set(ids);
+      all = all.filter(r=>!set.has(r.id));
+      localStorage.setItem('ss_records', JSON.stringify(all));
+      return;
+    }
+    return new Promise((resolve)=>{
+      const s = tx('records','readwrite');
+      ids.forEach(id=>s.delete(id));
+      s.transaction.oncomplete=()=>resolve();
+      s.transaction.onerror=()=>resolve();
+    });
+  }
+  async function clearAll(){
+    if(useLocalFallback){ localStorage.removeItem('ss_records'); localStorage.removeItem('ss_meta'); return; }
+    return new Promise((resolve)=>{
+      const s1 = tx('records','readwrite').clear();
+      const s2 = tx('meta','readwrite').clear();
+      let n=0; const done=()=>{ n++; if(n===2) resolve(); };
+      s1.onsuccess=done; s1.onerror=done; s2.onsuccess=done; s2.onerror=done;
+    });
+  }
+  async function getMeta(key, fallback){
+    if(useLocalFallback){
+      const all = JSON.parse(localStorage.getItem('ss_meta')||'{}');
+      return key in all ? all[key] : fallback;
+    }
+    return new Promise((resolve)=>{
+      const r = tx('meta','readonly').get(key);
+      r.onsuccess=()=>resolve(r.result ? r.result.value : fallback);
+      r.onerror=()=>resolve(fallback);
+    });
+  }
+  async function setMeta(key, value){
+    if(useLocalFallback){
+      const all = JSON.parse(localStorage.getItem('ss_meta')||'{}');
+      all[key]=value; localStorage.setItem('ss_meta', JSON.stringify(all));
+      return;
+    }
+    return new Promise((resolve)=>{ const r=tx('meta','readwrite').put({key,value}); r.onsuccess=()=>resolve(); r.onerror=()=>resolve(); });
+  }
+
+  return { open, getAllRecords, putRecord, putRecords, deleteRecord, deleteRecords, clearAll, getMeta, setMeta };
+})();
+
+/* ---------------------------------------------------------------
+   2. APP STATE
+---------------------------------------------------------------- */
+const App = {
+  records: [],          // all records in memory (kept in sync with IndexedDB)
+  columns: [],           // [{id,label}] dynamic scanned columns
+  forms: [],              // [{id,name,fields:[{id,label,type,options,required}]}] custom form templates
+  settings: {
+    theme:'dark', fontScale:1, statuses: DEFAULT_STATUSES.map(s=>({...s})),
+    defaultStatus:'Pending', autoSaveInterval:5,
+    googleSync: { url:'', token:'', autoSync:false, lastSyncedAt:null }
+  },
+  deletedIds: [],          // record ids removed locally since the last successful push (tombstones for sync)
+  consoleUser: '',         // username, when running as a tool inside Ashish's Console
+  selection: new Set(),
+  filtered: [],           // current filtered+sorted view (array of record refs) for Data Sheet
+  sortCol: null, sortDir: 1,
+  searchTerm:'', statusFilter:'', dashFormFilter:'',
+  undoStack: [], redoStack: [],
+  saveTimer: null, dirty:false,
+};
+
+function scheduleSave(){
+  App.dirty = true;
+  clearTimeout(App.saveTimer);
+  const secs = Math.max(1, Number(App.settings.autoSaveInterval)||5);
+  App.saveTimer = setTimeout(flushSave, secs*1000);
+  scheduleGoogleSync();
+}
+async function flushSave(){
+  if(!App.dirty) return;
+  await DB.setMeta('columns', App.columns);
+  await DB.setMeta('settings', App.settings);
+  App.dirty=false;
+}
+window.addEventListener('beforeunload', flushSave);
+
+/* ---------------------------------------------------------------
+   3. UNDO / REDO
+   Each action: {type:'update'|'add'|'delete', records:[before...], after:[after...]}
+---------------------------------------------------------------- */
+function pushHistory(action){
+  App.undoStack.push(action);
+  if(App.undoStack.length>100) App.undoStack.shift();
+  App.redoStack.length = 0;
+}
+async function applyInverse(action, toStack){
+  if(action.type==='add'){
+    const ids = action.after.map(r=>r.id);
+    App.records = App.records.filter(r=>!ids.includes(r.id));
+    await DB.deleteRecords(ids);
+    markDeleted(ids);
+  } else if(action.type==='delete'){
+    action.before.forEach(r=>App.records.push(r));
+    await DB.putRecords(action.before);
+  } else if(action.type==='update'){
+    action.before.forEach(rec=>{
+      const i = App.records.findIndex(r=>r.id===rec.id);
+      if(i>=0) App.records[i]=rec;
+    });
+    await DB.putRecords(action.before);
+  }
+}
+async function applyForward(action){
+  if(action.type==='add'){
+    action.after.forEach(r=>App.records.push(r));
+    await DB.putRecords(action.after);
+  } else if(action.type==='delete'){
+    const ids = action.before.map(r=>r.id);
+    App.records = App.records.filter(r=>!ids.includes(r.id));
+    await DB.deleteRecords(ids);
+    markDeleted(ids);
+  } else if(action.type==='update'){
+    action.after.forEach(rec=>{
+      const i = App.records.findIndex(r=>r.id===rec.id);
+      if(i>=0) App.records[i]=rec;
+    });
+    await DB.putRecords(action.after);
+  }
+}
+async function undo(){
+  const a = App.undoStack.pop(); if(!a){ toast('Nothing to undo'); return; }
+  await applyInverse(a); App.redoStack.push(a);
+  refreshAllViews(); toast('Undid last change');
+}
+async function redo(){
+  const a = App.redoStack.pop(); if(!a){ toast('Nothing to redo'); return; }
+  await applyForward(a); App.undoStack.push(a);
+  refreshAllViews(); toast('Redid change');
+}
+document.getElementById('btnUndo').onclick = undo;
+document.getElementById('btnRedo').onclick = redo;
+
+/* Helper: clone a record for history snapshots */
+function clone(r){ return JSON.parse(JSON.stringify(r)); }
+
+/* Track ids removed locally so the next Google Sync push can delete them
+   on the sheet too. Cleared automatically after a successful push. */
+function markDeleted(ids){
+  ids.forEach(id=>{ if(!App.deletedIds.includes(id)) App.deletedIds.push(id); });
+  DB.setMeta('deletedIds', App.deletedIds);
+}
+
+/* ---------------------------------------------------------------
+   4. NAVIGATION
+---------------------------------------------------------------- */
+function goTo(pageName){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-'+pageName).classList.add('active');
+  document.querySelectorAll('.drawer-btn').forEach(b=>b.classList.toggle('active', b.dataset.nav===pageName));
+  if(pageName==='dashboard') renderDashboard();
+  if(pageName==='sheet') renderSheet();
+  if(pageName==='reports') renderReports(true);
+  if(pageName==='forms'){ showFormsList(); renderFormsList(); }
+  if(pageName==='settings') initGoogleSyncUI();
+  closeDrawer();
+  window.scrollTo(0,0);
+}
+document.querySelectorAll('[data-nav]').forEach(el=>{
+  el.addEventListener('click', ()=>goTo(el.dataset.nav));
+});
+
+/* ---------------------------------------------------------------
+   Side drawer open/close
+---------------------------------------------------------------- */
+function openDrawer(){
+  document.getElementById('sideDrawer').classList.add('open');
+  document.getElementById('drawerBackdrop').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeDrawer(){
+  document.getElementById('sideDrawer').classList.remove('open');
+  document.getElementById('drawerBackdrop').classList.remove('open');
+  document.body.style.overflow = '';
+}
+document.getElementById('btnMenu').onclick = openDrawer;
+document.getElementById('btnDrawerClose').onclick = closeDrawer;
+document.getElementById('drawerBackdrop').onclick = closeDrawer;
+
+/* ---------------------------------------------------------------
+   5. THEME / SETTINGS UI
+---------------------------------------------------------------- */
+function applyTheme(){
+  document.body.dataset.theme = App.settings.theme;
+  document.documentElement.style.setProperty('--font-scale', App.settings.fontScale);
+  document.getElementById('btnThemeToggle').textContent = App.settings.theme==='dark' ? '☀️' : '🌙';
+  document.getElementById('toggleDark').checked = App.settings.theme==='dark';
+}
+document.getElementById('btnThemeToggle').onclick = ()=>{
+  App.settings.theme = App.settings.theme==='dark' ? 'light':'dark';
+  applyTheme(); scheduleSave();
+};
+document.getElementById('toggleDark').onchange = (e)=>{
+  App.settings.theme = e.target.checked ? 'dark':'light';
+  applyTheme(); scheduleSave();
+};
+document.getElementById('fontSize').oninput = (e)=>{
+  App.settings.fontScale = Number(e.target.value);
+  applyTheme(); scheduleSave();
+};
+
+function statusColorVar(status){
+  const s = App.settings.statuses.find(x=>x.name===status);
+  return s ? s.color : FALLBACK_STATUS_COLOR;
+}
+
+/* ---------- Manage Statuses (add / rename / recolor / reorder / delete) ---------- */
+function renderStatusColorSettings(){
+  const wrap = document.getElementById('statusColorList');
+  wrap.innerHTML='';
+  App.settings.statuses.forEach((s,idx)=>{
+    const row = document.createElement('div'); row.className='color-row'; row.style.gap='6px';
+    row.innerHTML = `
+      <input type="color" value="${s.color}" data-idx="${idx}" data-role="color" style="width:38px;height:30px; flex-shrink:0;">
+      <input type="text" value="${escapeAttr(s.name)}" data-idx="${idx}" data-role="name" class="field-input" style="flex:1; min-width:0; min-height:34px; padding:5px 8px;">
+      <div class="btn-row" style="gap:3px; flex-shrink:0;">
+        ${idx>0?`<button type="button" class="icon-btn" data-role="up" data-idx="${idx}" style="width:30px;height:30px;">↑</button>`:''}
+        ${idx<App.settings.statuses.length-1?`<button type="button" class="icon-btn" data-role="down" data-idx="${idx}" style="width:30px;height:30px;">↓</button>`:''}
+        <button type="button" class="icon-btn" data-role="del" data-idx="${idx}" style="width:30px;height:30px;">✕</button>
+      </div>`;
+    wrap.appendChild(row);
+  });
+
+  wrap.querySelectorAll('[data-role="color"]').forEach(inp=>{
+    inp.oninput = ()=>{ App.settings.statuses[Number(inp.dataset.idx)].color = inp.value; applyTheme(); scheduleSave(); renderDashboard(); };
+  });
+  wrap.querySelectorAll('[data-role="name"]').forEach(inp=>{
+    inp.onchange = async ()=>{
+      const idx = Number(inp.dataset.idx);
+      const oldName = App.settings.statuses[idx].name;
+      const newName = inp.value.trim();
+      if(!newName){ inp.value = oldName; toast('Status name cannot be empty'); return; }
+      if(newName===oldName) return;
+      if(App.settings.statuses.some((s,i)=>i!==idx && s.name===newName)){ inp.value = oldName; toast('That status already exists'); return; }
+      await renameStatusEverywhere(oldName, newName);
+      App.settings.statuses[idx].name = newName;
+      scheduleSave(); fillStatusSelects(); refreshAllViews();
+      toast(`Renamed "${oldName}" → "${newName}"`);
+    };
+  });
+  wrap.querySelectorAll('[data-role="up"]').forEach(btn=>{
+    btn.onclick = ()=>{ const i=Number(btn.dataset.idx); [App.settings.statuses[i-1],App.settings.statuses[i]]=[App.settings.statuses[i],App.settings.statuses[i-1]]; renderStatusColorSettings(); scheduleSave(); };
+  });
+  wrap.querySelectorAll('[data-role="down"]').forEach(btn=>{
+    btn.onclick = ()=>{ const i=Number(btn.dataset.idx); [App.settings.statuses[i+1],App.settings.statuses[i]]=[App.settings.statuses[i],App.settings.statuses[i+1]]; renderStatusColorSettings(); scheduleSave(); };
+  });
+  wrap.querySelectorAll('[data-role="del"]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const idx = Number(btn.dataset.idx);
+      if(App.settings.statuses.length<=1){ toast('At least one status is required'); return; }
+      deleteStatusWithConfirm(idx);
+    };
+  });
+}
+
+/* Update every record that has `oldName` to `newName` (keeps history/undo working) */
+async function renameStatusEverywhere(oldName, newName){
+  const before=[], after=[];
+  App.records.forEach(r=>{
+    if(r.status===oldName){ before.push(clone(r)); r.status=newName; r.updatedAt=new Date().toISOString(); after.push(clone(r)); }
+  });
+  if(App.settings.defaultStatus===oldName) App.settings.defaultStatus = newName;
+  if(before.length){ pushHistory({type:'update', before, after}); await DB.putRecords(after); }
+}
+
+function deleteStatusWithConfirm(idx){
+  const name = App.settings.statuses[idx].name;
+  const inUse = App.records.filter(r=>r.status===name).length;
+  const body = inUse
+    ? `${inUse} record(s) currently use "${name}". They'll be reassigned to "${App.settings.statuses.find((s,i)=>i!==idx).name}". This cannot be undone from Settings (but Undo still works right after).`
+    : `Delete the "${name}" status?`;
+  confirmModal(`Delete status "${name}"?`, body, async ()=>{
+    const fallback = App.settings.statuses.find((s,i)=>i!==idx).name;
+    if(inUse) await renameStatusEverywhere(name, fallback);
+    App.settings.statuses.splice(idx,1);
+    if(App.settings.defaultStatus===name) App.settings.defaultStatus = App.settings.statuses[0].name;
+    scheduleSave(); renderStatusColorSettings(); fillStatusSelects(); refreshAllViews();
+    toast('Status deleted');
+  });
+}
+
+document.getElementById('btnAddStatus').onclick = ()=>{
+  const name = prompt('New status name:'); if(!name || !name.trim()) return;
+  const trimmed = name.trim();
+  if(App.settings.statuses.some(s=>s.name===trimmed)){ toast('That status already exists'); return; }
+  const palette = ['#22d3ee','#f97316','#84cc16','#e879f9','#14b8a6','#facc15','#fb7185'];
+  const color = palette[App.settings.statuses.length % palette.length];
+  App.settings.statuses.push({name:trimmed, color});
+  renderStatusColorSettings(); fillStatusSelects(); applyTheme(); scheduleSave();
+  toast(`Status "${trimmed}" added`);
+};
+document.getElementById('btnResetColors').onclick = ()=>{
+  confirmModal('Reset statuses?', 'This restores the default 6 statuses and colors. Existing records keep whatever status name they currently have (even if it no longer appears in this list).', ()=>{
+    App.settings.statuses = DEFAULT_STATUSES.map(s=>({...s}));
+    App.settings.defaultStatus = 'Pending';
+    renderStatusColorSettings(); fillStatusSelects(); applyTheme(); scheduleSave();
+    toast('Statuses reset to default');
+  });
+};
+
+function fillStatusSelects(){
+  const names = getStatusNames();
+  const defSel = document.getElementById('defaultStatus');
+  defSel.innerHTML = names.map(s=>`<option value="${s}">${s}</option>`).join('');
+  defSel.value = App.settings.defaultStatus;
+  defSel.onchange = ()=>{ App.settings.defaultStatus = defSel.value; scheduleSave(); };
+
+  document.getElementById('filterStatus').innerHTML = '<option value="">All statuses</option>'+names.map(s=>`<option value="${s}">${s}</option>`).join('');
+  document.getElementById('repStatus').innerHTML = '<option value="">All statuses</option>'+names.map(s=>`<option value="${s}">${s}</option>`).join('');
+}
+document.getElementById('autoSaveInterval').onchange = (e)=>{
+  App.settings.autoSaveInterval = Math.max(1, Number(e.target.value)||5); scheduleSave();
+};
+
+/* ---------------------------------------------------------------
+   6. BACKUP / RESTORE / CLEAR
+---------------------------------------------------------------- */
+function downloadBlob(content, filename, mime){
+  const blob = new Blob([content], {type:mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+}
+function backupPayload(){
+  return JSON.stringify({
+    version:1, exportedAt:new Date().toISOString(),
+    columns: App.columns, forms: App.forms, settings: App.settings, records: App.records
+  }, null, 0);
+}
+document.getElementById('btnBackup').onclick = ()=>{
+  downloadBlob(backupPayload(), `scansheet-backup-${fmtDate(new Date())}.json`, 'application/json');
+  toast('Backup downloaded');
+};
+document.getElementById('btnExpJSON').onclick = ()=>document.getElementById('btnBackup').click();
+
+async function restoreFromFile(file){
+  try{
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if(!data.records) throw new Error('Invalid file');
+    await DB.clearAll();
+    App.records = data.records;
+    App.columns = data.columns || [];
+    App.forms = data.forms || [];
+    if(data.settings){
+      App.settings = {...App.settings, ...data.settings};
+      if(!Array.isArray(data.settings.statuses) || !data.settings.statuses.length){
+        App.settings.statuses = data.settings.statusColors
+          ? Object.entries(data.settings.statusColors).map(([name,color])=>({name,color}))
+          : DEFAULT_STATUSES.map(s=>({...s}));
+      }
+      delete App.settings.statusColors;
+    }
+    await DB.putRecords(App.records);
+    await DB.setMeta('columns', App.columns);
+    await DB.setMeta('forms', App.forms);
+    await DB.setMeta('settings', App.settings);
+    applyTheme(); showFormsList(); refreshAllViews();
+    toast('Data restored');
+  }catch(err){ toast('Restore failed: '+err.message); }
+}
+document.getElementById('restoreInput').onchange = (e)=>{ if(e.target.files[0]) restoreFromFile(e.target.files[0]); e.target.value=''; };
+document.getElementById('importJSON').onchange = (e)=>{ if(e.target.files[0]) restoreFromFile(e.target.files[0]); e.target.value=''; };
+
+document.getElementById('btnClearData').onclick = ()=>{
+  confirmModal('Clear all data?', 'This deletes every scanned record permanently from this device. This cannot be undone. If Google Sync is connected, the Sheet itself is left untouched — use Pull to bring that data back afterward if needed.', async ()=>{
+    await DB.clearAll();
+    App.records=[]; App.columns=[]; App.forms=[]; App.deletedIds=[]; App.undoStack=[]; App.redoStack=[]; activeForm=null;
+    showFormsList(); refreshAllViews(); toast('All data cleared');
+  });
+};
+
+/* generic confirm modal */
+function confirmModal(title, body, onConfirm){
+  const host = document.getElementById('modalHost');
+  host.innerHTML = `<div class="modal-backdrop"><div class="modal">
+    <div class="modal-header"><h3>${title}</h3></div>
+    <p class="muted small">${body}</p>
+    <div class="btn-row" style="justify-content:flex-end; margin-top:14px;">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-danger" id="mOk">Confirm</button>
+    </div></div></div>`;
+  document.getElementById('mCancel').onclick = ()=>host.innerHTML='';
+  document.getElementById('mOk').onclick = ()=>{ host.innerHTML=''; onConfirm(); };
+}
+
+/* ---------------------------------------------------------------
+   7. RECORD / COLUMN HELPERS
+---------------------------------------------------------------- */
+function newRecord(cellsObj){
+  const now = new Date();
+  return {
+    id: uid(),
+    cells: cellsObj || {},                 // {colId: text}
+    status: App.settings.defaultStatus,
+    remarks:'', date: fmtDate(now), time: fmtTime(now),
+    dueDate: '',                            // optional due date -> feeds the Days Remaining column
+    assignedTo:'', priority:'Medium', tags:'',
+    createdAt: now.toISOString(), updatedAt: now.toISOString()
+  };
+}
+/* Days remaining until dueDate (negative = overdue). Returns null if no due date set. */
+function daysRemaining(dueDateStr){
+  if(!dueDateStr) return null;
+  const due = new Date(dueDateStr+'T00:00:00');
+  if(isNaN(due.getTime())) return null;
+  const today = new Date(); today.setHours(0,0,0,0);
+  return Math.round((due - today) / 86400000);
+}
+function daysRemainingHtml(dueDateStr){
+  const d = daysRemaining(dueDateStr);
+  if(d===null) return '<span class="muted small">—</span>';
+  let color = 'var(--text-dim)', label = `${d}d`;
+  if(d<0){ color='var(--danger)'; label = `${Math.abs(d)}d overdue`; }
+  else if(d===0){ color='var(--status-pending, #f59e0b)'; label = 'Due today'; }
+  else if(d<=3){ color='var(--status-pending, #f59e0b)'; label = `${d}d left`; }
+  else { color='var(--success)'; label = `${d}d left`; }
+  return `<span class="small" style="font-weight:700; color:${color};">${label}</span>`;
+}
+function ensureColumn(label){
+  let col = App.columns.find(c=>c.label===label);
+  if(!col){ col = {id:'c'+(App.columns.length+1)+'_'+Math.random().toString(36).slice(2,5), label}; App.columns.push(col); }
+  return col;
+}
+function addColumn(label){
+  const id = 'c'+Date.now().toString(36);
+  App.columns.push({id, label: label || `Column ${App.columns.length+1}`});
+  App.records.forEach(r=>{ if(!(id in r.cells)) r.cells[id]=''; });
+  scheduleSave(); DB.putRecords(App.records);
+}
+function removeLastColumn(){
+  const col = App.columns.pop();
+  if(!col) return;
+  App.records.forEach(r=>{ delete r.cells[col.id]; });
+  scheduleSave(); DB.putRecords(App.records);
+}
+
+/* ---------------------------------------------------------------
+   8. GLOBAL SEARCH / SORT / FILTER (Data Sheet)
+---------------------------------------------------------------- */
+function recomputeFiltered(){
+  const term = App.searchTerm.trim().toLowerCase();
+  const statusF = App.statusFilter;
+  App.filtered = App.records.filter(r=>{
+    if(r.formId) return false; // custom-form entries live in their own table on the Forms page
+    if(statusF && r.status!==statusF) return false;
+    if(!term) return true;
+    const hay = [
+      ...Object.values(r.cells||{}), r.status, r.remarks, r.assignedTo, r.priority, r.tags, r.date, r.time
+    ].join(' ').toLowerCase();
+    return hay.includes(term);
+  });
+  if(App.sortCol){
+    App.filtered.sort((a,b)=>{
+      const va = getSortValue(a, App.sortCol), vb = getSortValue(b, App.sortCol);
+      if(va<vb) return -1*App.sortDir; if(va>vb) return 1*App.sortDir; return 0;
+    });
+  }
+}
+function getSortValue(r, col){
+  if(col==='status') return r.status||'';
+  if(col==='remarks') return r.remarks||'';
+  if(col==='date') return r.date||'';
+  if(col==='time') return r.time||'';
+  if(col==='dueDate') return r.dueDate||'';
+  if(col==='daysRemaining'){ const d=daysRemaining(r.dueDate); return d===null ? Infinity : d; }
+  if(col==='assignedTo') return r.assignedTo||'';
+  if(col==='priority') return r.priority||'';
+  if(col==='tags') return r.tags||'';
+  return (r.cells && r.cells[col]) || '';
+}
+
+/* ---------------------------------------------------------------
+   9. VIRTUALIZED DATA GRID (Data Sheet page) — handles 20k+ rows
+   Renders only the visible slice of rows inside a tall spacer.
+---------------------------------------------------------------- */
+function colWidthPx(){ return 150; }
+
+function gridColumns(){
+  // fixed leading columns + dynamic scanned columns + fixed trailing fields
+  return [
+    {id:'__select', label:'', w:40, kind:'select'},
+    {id:'status', label:'Status', w:132, kind:'status', sortable:true},
+    ...App.columns.map(c=>({id:c.id, label:c.label, w:150, kind:'cell', sortable:true})),
+    {id:'remarks', label:'Remarks', w:170, kind:'text', sortable:true},
+    {id:'date', label:'Date', w:110, kind:'date', sortable:true},
+    {id:'time', label:'Time', w:90, kind:'time', sortable:true},
+    {id:'dueDate', label:'Due Date', w:120, kind:'duedate', sortable:true},
+    {id:'daysRemaining', label:'Days Remaining', w:130, kind:'daysremaining', sortable:true},
+    {id:'assignedTo', label:'Assigned To', w:130, kind:'text', sortable:true},
+    {id:'priority', label:'Priority', w:110, kind:'priority', sortable:true},
+    {id:'tags', label:'Tags', w:160, kind:'text', sortable:true},
+  ];
+}
+
+function renderSheetHeader(){
+  const cols = gridColumns();
+  const head = document.createElement('div'); head.className='grid-head-row';
+  cols.forEach(c=>{
+    const d = document.createElement('div'); d.className='gcell'+(c.sortable?' sortable':'');
+    d.style.width=c.w+'px';
+    d.textContent = c.label;
+    if(c.sortable){
+      d.onclick = ()=>{
+        if(App.sortCol===c.id) App.sortDir*=-1; else { App.sortCol=c.id; App.sortDir=1; }
+        renderSheet();
+      };
+      if(App.sortCol===c.id) d.textContent += App.sortDir===1 ? ' ▲':' ▼';
+    }
+    head.appendChild(d);
+  });
+  return head;
+}
+
+function statusPillHtml(status){
+  const color = statusColorVar(status);
+  return `<span class="pill" style="background:${color}"><span class="dot"></span>${status}</span>`;
+}
+
+function buildRowEl(rec, cols){
+  const row = document.createElement('div'); row.className='grid-row'+(App.selection.has(rec.id)?' selected':'');
+  row.style.height=ROW_H+'px'; row.dataset.id=rec.id;
+  cols.forEach(c=>{
+    const cell = document.createElement('div'); cell.className='gcell'; cell.style.width=c.w+'px';
+    if(c.kind==='select'){
+      cell.classList.add('select-col');
+      cell.innerHTML = `<input type="checkbox" ${App.selection.has(rec.id)?'checked':''}>`;
+      cell.querySelector('input').onclick = (e)=>{
+        e.stopPropagation();
+        if(e.target.checked) App.selection.add(rec.id); else App.selection.delete(rec.id);
+        row.classList.toggle('selected', e.target.checked);
+      };
+    } else if(c.kind==='status'){
+      cell.classList.add('status-col');
+      cell.innerHTML = statusPillHtml(rec.status);
+      cell.title='Tap to cycle · swipe on mobile';
+      cell.onclick = ()=>cycleStatus(rec, 1);
+      attachSwipe(cell, rec);
+    } else if(c.kind==='priority'){
+      cell.innerHTML = `<select data-field="priority">${PRIORITIES.map(p=>`<option ${p===rec.priority?'selected':''}>${p}</option>`).join('')}</select>`;
+      cell.querySelector('select').onchange=(e)=>updateField(rec,'priority',e.target.value);
+    } else if(c.kind==='date'){
+      cell.innerHTML = `<input type="date" value="${rec.date||''}">`;
+      cell.querySelector('input').onchange=(e)=>updateField(rec,'date',e.target.value);
+    } else if(c.kind==='time'){
+      cell.innerHTML = `<input type="time" value="${rec.time||''}">`;
+      cell.querySelector('input').onchange=(e)=>updateField(rec,'time',e.target.value);
+    } else if(c.kind==='duedate'){
+      cell.innerHTML = `<input type="date" value="${rec.dueDate||''}">`;
+      cell.querySelector('input').onchange=(e)=>updateField(rec,'dueDate',e.target.value);
+    } else if(c.kind==='daysremaining'){
+      cell.innerHTML = daysRemainingHtml(rec.dueDate);
+    } else {
+      const val = c.kind==='text' ? (rec[c.id] ?? '') : (rec.cells[c.id] ?? '');
+      cell.innerHTML = `<input type="text" value="${escapeAttr(val)}">`;
+      cell.querySelector('input').onchange=(e)=>{
+        if(c.kind==='text') updateField(rec, c.id, e.target.value);
+        else updateCell(rec, c.id, e.target.value);
+      };
+    }
+    row.appendChild(cell);
+  });
+  return row;
+}
+function escapeAttr(s){ return String(s).replace(/"/g,'&quot;'); }
+
+async function updateField(rec, field, value){
+  const before = clone(rec);
+  rec[field]=value; rec.updatedAt=new Date().toISOString();
+  pushHistory({type:'update', before:[before], after:[clone(rec)]});
+  await DB.putRecord(rec);
+  if(field==='status'){ renderDashboardStatsOnly(); }
+}
+async function updateCell(rec, colId, value){
+  const before = clone(rec);
+  rec.cells[colId]=value; rec.updatedAt=new Date().toISOString();
+  pushHistory({type:'update', before:[before], after:[clone(rec)]});
+  await DB.putRecord(rec);
+}
+async function cycleStatus(rec, dir){
+  const before = clone(rec);
+  let i = getStatusNames().indexOf(rec.status);
+  i = (i + dir + getStatusNames().length) % getStatusNames().length;
+  rec.status = getStatusNames()[i]; rec.updatedAt = new Date().toISOString();
+  pushHistory({type:'update', before:[before], after:[clone(rec)]});
+  await DB.putRecord(rec);
+  vibrate(12);
+  renderSheetIfActive(); renderDashboardStatsOnly();
+  if(activeForm && document.getElementById('page-forms').classList.contains('active')) renderFormGrid();
+}
+function attachSwipe(el, rec){
+  let sx=0, sy=0, active=false;
+  el.addEventListener('touchstart', (e)=>{ const t=e.touches[0]; sx=t.clientX; sy=t.clientY; active=true; }, {passive:true});
+  el.addEventListener('touchend', (e)=>{
+    if(!active) return; active=false;
+    const t = e.changedTouches[0]; const dx=t.clientX-sx, dy=t.clientY-sy;
+    if(Math.abs(dx)>40 && Math.abs(dx)>Math.abs(dy)*1.5){ cycleStatus(rec, dx>0?1:-1); }
+  }, {passive:true});
+}
+
+/* --- virtualization core --- */
+let sheetScrollEl, sheetInnerHeightEl, sheetVisibleWrap, sheetHeaderEl;
+function renderSheet(){
+  recomputeFiltered();
+  document.getElementById('sheetCount').textContent = `${App.filtered.length.toLocaleString()} / ${App.records.length.toLocaleString()} records`;
+
+  const container = document.getElementById('mainGridScroll');
+  container.innerHTML='';
+  const cols = gridColumns();
+  const totalW = cols.reduce((s,c)=>s+c.w,0);
+
+  const wrapper = document.createElement('div'); wrapper.style.minWidth = totalW+'px';
+  sheetHeaderEl = renderSheetHeader(); sheetHeaderEl.style.minWidth = totalW+'px';
+  wrapper.appendChild(sheetHeaderEl);
+
+  const spacer = document.createElement('div'); spacer.className='spacer-row';
+  spacer.style.height = (App.filtered.length*ROW_H)+'px'; spacer.style.position='relative';
+  const visWrap = document.createElement('div'); visWrap.style.position='absolute'; visWrap.style.top='0'; visWrap.style.left='0'; visWrap.style.right='0'; visWrap.style.minWidth=totalW+'px';
+  spacer.appendChild(visWrap);
+  wrapper.appendChild(spacer);
+  container.appendChild(wrapper);
+
+  sheetScrollEl = container; sheetVisibleWrap = visWrap;
+
+  if(App.filtered.length===0){
+    visWrap.innerHTML = `<div class="empty-state"><div class="ic">▤</div>No records yet — add a row or fill a form.</div>`;
+    spacer.style.height='auto';
+    return;
+  }
+
+  function draw(){
+    const scrollTop = container.scrollTop;
+    const viewH = container.clientHeight || 500;
+    const startIdx = Math.max(0, Math.floor(scrollTop/ROW_H) - 5);
+    const endIdx = Math.min(App.filtered.length, Math.ceil((scrollTop+viewH)/ROW_H)+5);
+    visWrap.style.transform = `translateY(${startIdx*ROW_H}px)`;
+    visWrap.innerHTML='';
+    const frag = document.createDocumentFragment();
+    for(let i=startIdx;i<endIdx;i++){ frag.appendChild(buildRowEl(App.filtered[i], cols)); }
+    visWrap.appendChild(frag);
+  }
+  container.onscroll = ()=>{ window.requestAnimationFrame(draw); };
+  draw();
+}
+function renderSheetIfActive(){ if(document.getElementById('page-sheet').classList.contains('active')) renderSheet(); }
+
+document.getElementById('searchBox').oninput = (e)=>{ App.searchTerm=e.target.value; renderSheet(); };
+document.getElementById('filterStatus').onchange = (e)=>{ App.statusFilter=e.target.value; renderSheet(); };
+document.getElementById('btnAddRow').onclick = async ()=>{
+  const rec = newRecord({}); App.columns.forEach(c=>rec.cells[c.id]='');
+  App.records.push(rec); pushHistory({type:'add', before:[], after:[clone(rec)]});
+  await DB.putRecord(rec); renderSheet();
+};
+document.getElementById('btnAddCol').onclick = ()=>{
+  const label = prompt('New column name:', `Column ${App.columns.length+1}`);
+  if(label===null) return;
+  addColumn(label || undefined); renderSheet();
+};
+document.getElementById('btnDeleteSel').onclick = async ()=>{
+  if(App.selection.size===0){ toast('No rows selected'); return; }
+  const ids = [...App.selection];
+  const before = App.records.filter(r=>ids.includes(r.id)).map(clone);
+  App.records = App.records.filter(r=>!ids.includes(r.id));
+  pushHistory({type:'delete', before, after:[]});
+  await DB.deleteRecords(ids);
+  markDeleted(ids);
+  App.selection.clear(); renderSheet(); renderDashboardStatsOnly();
+  toast(`${ids.length} record(s) deleted`);
+};
+document.getElementById('btnBulkEdit').onclick = ()=>{
+  if(App.selection.size===0){ toast('Select rows first'); return; }
+  openBulkEditModal();
+};
+function openBulkEditModal(){
+  const host = document.getElementById('modalHost');
+  host.innerHTML = `<div class="modal-backdrop"><div class="modal">
+    <div class="modal-header"><h3>Bulk edit (${App.selection.size} rows)</h3><button class="icon-btn" id="mClose">✕</button></div>
+    <div class="field"><label>Status</label><select id="bkStatus" class="field-input"><option value="">— no change —</option>${getStatusNames().map(s=>`<option>${s}</option>`).join('')}</select></div>
+    <div class="field"><label>Priority</label><select id="bkPriority" class="field-input"><option value="">— no change —</option>${PRIORITIES.map(p=>`<option>${p}</option>`).join('')}</select></div>
+    <div class="field"><label>Assigned To</label><input id="bkAssigned" class="field-input" placeholder="leave blank for no change"></div>
+    <div class="field"><label>Remarks (appended)</label><input id="bkRemarks" class="field-input" placeholder="leave blank for no change"></div>
+    <div class="btn-row" style="justify-content:flex-end;"><button class="btn btn-primary" id="bkApply">Apply to selected</button></div>
+  </div></div>`;
+  document.getElementById('mClose').onclick = ()=>host.innerHTML='';
+  document.getElementById('bkApply').onclick = async ()=>{
+    const st = document.getElementById('bkStatus').value;
+    const pr = document.getElementById('bkPriority').value;
+    const asg = document.getElementById('bkAssigned').value;
+    const rem = document.getElementById('bkRemarks').value;
+    const ids = [...App.selection];
+    const before=[], after=[];
+    ids.forEach(id=>{
+      const rec = App.records.find(r=>r.id===id); if(!rec) return;
+      before.push(clone(rec));
+      if(st) rec.status=st; if(pr) rec.priority=pr; if(asg) rec.assignedTo=asg;
+      if(rem) rec.remarks = (rec.remarks? rec.remarks+' | ':'') + rem;
+      rec.updatedAt=new Date().toISOString();
+      after.push(clone(rec));
+    });
+    pushHistory({type:'update', before, after});
+    await DB.putRecords(after);
+    host.innerHTML=''; renderSheet(); renderDashboardStatsOnly();
+    toast('Bulk edit applied');
+  };
+}
+
+/* ---------------------------------------------------------------
+   12b. QUICK ENTRY FORM
+   Pick a status, write a comment, fill any table columns that
+   already exist, and submit. The new row lands in the shared
+   records store, so it instantly appears in the Data Sheet table,
+   feeds the Dashboard / Reports charts, and is included in every
+   Excel/CSV/PDF export.
+---------------------------------------------------------------- */
+let formSelectedStatus = App.settings.defaultStatus;
+
+function openEntryFormModal(){
+  formSelectedStatus = App.settings.defaultStatus;
+  const host = document.getElementById('modalHost');
+  const now = new Date();
+
+  const colFieldsHtml = App.columns.length
+    ? App.columns.map(c=>`
+        <div class="field">
+          <label>${escapeAttr(c.label)}</label>
+          <input type="text" class="field-input" data-col-id="${c.id}" placeholder="${escapeAttr(c.label)}">
+        </div>`).join('')
+    : `<p class="small muted">No table columns yet. This entry will be saved with just the fields below — use "+ Column" in the Data Sheet to add structured columns later.</p>`;
+
+  host.innerHTML = `<div class="modal-backdrop"><div class="modal bracket">
+    <div class="modal-header"><h3>📝 New Entry</h3><button class="icon-btn" id="efClose">✕</button></div>
+
+    <div class="field">
+      <label>Status</label>
+      <div class="btn-row" id="efStatusRow"></div>
+    </div>
+
+    <div class="field">
+      <label>Comment</label>
+      <textarea id="efComment" class="field-input" rows="3" placeholder="Add a comment or remark…" style="width:100%; resize:vertical; font-family:inherit;"></textarea>
+    </div>
+
+    ${colFieldsHtml}
+
+    <div class="grid-2">
+      <div class="field"><label>Date</label><input type="date" id="efDate" class="field-input" value="${fmtDate(now)}"></div>
+      <div class="field"><label>Time</label><input type="time" id="efTime" class="field-input" value="${fmtTime(now)}"></div>
+    </div>
+    <div class="field"><label>Due Date <span class="muted" style="text-transform:none; font-weight:400;">(optional — powers the Days Remaining column)</span></label>
+      <input type="date" id="efDueDate" class="field-input">
+    </div>
+    <div class="grid-2">
+      <div class="field"><label>Assigned To</label><input type="text" id="efAssigned" class="field-input" placeholder="Name"></div>
+      <div class="field"><label>Priority</label>
+        <select id="efPriority" class="field-input">${PRIORITIES.map(p=>`<option ${p==='Medium'?'selected':''}>${p}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="field"><label>Tags (comma separated)</label><input type="text" id="efTags" class="field-input" placeholder="e.g. urgent, branch-12"></div>
+
+    <div class="btn-row" style="justify-content:flex-end; margin-top:6px;">
+      <button class="btn" id="efSaveAnother">Save &amp; add another</button>
+      <button class="btn btn-primary" id="efSave">✓ Save entry</button>
+    </div>
+  </div></div>`;
+
+  renderFormStatusButtons();
+  document.getElementById('efClose').onclick = ()=>host.innerHTML='';
+  document.getElementById('efSave').onclick = ()=>submitEntryForm(false);
+  document.getElementById('efSaveAnother').onclick = ()=>submitEntryForm(true);
+}
+
+function renderFormStatusButtons(){
+  const row = document.getElementById('efStatusRow');
+  row.innerHTML = getStatusNames().map(s=>{
+    const active = s===formSelectedStatus;
+    const color = statusColorVar(s);
+    return `<button type="button" class="btn btn-sm ef-status-btn" data-status="${s}"
+        style="border-color:${color}; ${active ? `background:${color}; color:#fff;` : `background:transparent; color:${color};`}">
+        <span class="dot" style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block;"></span> ${s}
+      </button>`;
+  }).join('');
+  row.querySelectorAll('.ef-status-btn').forEach(btn=>{
+    btn.onclick = ()=>{ formSelectedStatus = btn.dataset.status; renderFormStatusButtons(); };
+  });
+}
+
+async function submitEntryForm(addAnother){
+  const cells = {};
+  document.querySelectorAll('#modalHost [data-col-id]').forEach(inp=>{ cells[inp.dataset.colId] = inp.value; });
+
+  const rec = newRecord(cells);
+  rec.status = formSelectedStatus;
+  rec.remarks = document.getElementById('efComment').value.trim();
+  rec.date = document.getElementById('efDate').value || rec.date;
+  rec.time = document.getElementById('efTime').value || rec.time;
+  rec.dueDate = document.getElementById('efDueDate').value || '';
+  rec.assignedTo = document.getElementById('efAssigned').value.trim();
+  rec.priority = document.getElementById('efPriority').value;
+  rec.tags = document.getElementById('efTags').value.trim();
+
+  App.records.push(rec);
+  pushHistory({type:'add', before:[], after:[clone(rec)]});
+  await DB.putRecord(rec);
+
+  vibrate(15);
+  toast('Entry saved to Data Sheet');
+  refreshAllViews();
+
+  if(addAnother){
+    openEntryFormModal(); // fresh form, ready for the next record
+  } else {
+    document.getElementById('modalHost').innerHTML='';
+    goTo('sheet');
+  }
+}
+
+document.getElementById('btnNewEntryDash').onclick = openEntryFormModal;
+document.getElementById('btnNewEntrySheet').onclick = openEntryFormModal;
+document.getElementById('btnNewFormDash').onclick = ()=>openFormBuilderModal(null);
+
+/* ---------------------------------------------------------------
+   13. DASHBOARD
+---------------------------------------------------------------- */
+let chPie, chBar, chLine;
+
+/* Records currently in scope for the dashboard, based on the
+   "Showing data for" dropdown: all records, the main Data Sheet
+   only (records with no formId), or one specific custom form. */
+function dashScopedRecords(){
+  const sel = App.dashFormFilter || '';
+  if(!sel) return App.records;
+  if(sel==='__sheet__') return App.records.filter(r=>!r.formId);
+  return App.records.filter(r=>r.formId===sel);
+}
+function dashScopedLabel(){
+  const sel = App.dashFormFilter || '';
+  if(!sel) return 'All Records';
+  if(sel==='__sheet__') return 'Data Sheet';
+  const form = App.forms.find(f=>f.id===sel);
+  return form ? form.name : 'All Records';
+}
+function renderDashFormFilterOptions(){
+  const sel = document.getElementById('dashFormFilter');
+  const prev = App.dashFormFilter || '';
+  const opts = [`<option value="">All records (Data Sheet + every form)</option>`,
+    `<option value="__sheet__">Data Sheet only</option>`]
+    .concat(App.forms.map(f=>`<option value="${f.id}">${escapeAttr(f.name)}</option>`));
+  sel.innerHTML = opts.join('');
+  // keep the previous selection if that form still exists, otherwise fall back to "All"
+  const stillValid = prev==='' || prev==='__sheet__' || App.forms.some(f=>f.id===prev);
+  sel.value = stillValid ? prev : '';
+  App.dashFormFilter = sel.value;
+}
+document.getElementById('dashFormFilter').onchange = (e)=>{ App.dashFormFilter = e.target.value; renderDashboard(); };
+
+function statusCounts(records){
+  const counts = {}; getStatusNames().forEach(s=>counts[s]=0);
+  (records||App.records).forEach(r=>{ if(counts[r.status]!==undefined) counts[r.status]++; });
+  return counts;
+}
+function renderDashboardStatsOnly(){
+  if(document.getElementById('page-dashboard').classList.contains('active')) renderDashboard();
+}
+function renderDashboard(){
+  renderDashFormFilterOptions();
+  const records = dashScopedRecords();
+
+  document.getElementById('dashUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  const counts = statusCounts(records);
+  const total = records.length;
+  const cards = [{label:'Total Records', num:total, color:'var(--accent)', statusKey:null}]
+    .concat(getStatusNames().map(s=>({label:s, num:counts[s], color:statusColorVar(s), statusKey:s})));
+  const host = document.getElementById('dashStats'); host.innerHTML='';
+  cards.forEach(c=>{
+    const pct = total ? Math.round((c.num/total)*100) : 0;
+    const div = document.createElement('div'); div.className='card stat-card'; div.style.cursor='pointer';
+    div.title = 'Tap to preview these records';
+    div.innerHTML = `<div class="num" style="color:${c.color}">${c.num.toLocaleString()}</div>
+      <div class="label">${c.label}</div>
+      <div class="bar"><i style="width:${c.label==='Total Records'?100:pct}%; background:${c.color}"></i></div>`;
+    div.onclick = ()=>openStatusPreviewModal(c.statusKey, c.label==='Total Records' ? dashScopedLabel() : c.label, records);
+    host.appendChild(div);
+  });
+
+  const ctxColors = getStatusNames().map(s=>statusColorVar(s));
+  const pieData = getStatusNames().map(s=>counts[s]);
+  if(chPie) chPie.destroy();
+  chPie = new Chart(document.getElementById('chartPie'), {
+    type:'doughnut',
+    data:{ labels:getStatusNames(), datasets:[{ data:pieData, backgroundColor:ctxColors, borderWidth:0 }] },
+    options:{
+      onClick:(evt, els)=>{ if(els.length){ const s = getStatusNames()[els[0].index]; openStatusPreviewModal(s,s,records); } },
+      plugins:{legend:{position:'bottom', labels:{color:getComputedStyle(document.body).getPropertyValue('--text')}}}
+    }
+  });
+
+  // last 14 days record counts (by createdAt)
+  const days = lastNDays(14);
+  const perDay = days.map(d=>records.filter(r=>r.date===d).length);
+  if(chBar) chBar.destroy();
+  chBar = new Chart(document.getElementById('chartBar'), {
+    type:'bar',
+    data:{ labels:days.map(d=>d.slice(5)), datasets:[{ label:'Records', data:perDay, backgroundColor:'#22d3ee' }] },
+    options:{ plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'var(--text-dim)'}}, y:{ticks:{color:'var(--text-dim)'}, beginAtZero:true}} }
+  });
+
+  const completedPerDay = days.map(d=>records.filter(r=>r.date===d && r.status==='Completed').length);
+  if(chLine) chLine.destroy();
+  chLine = new Chart(document.getElementById('chartLine'), {
+    type:'line',
+    data:{ labels:days.map(d=>d.slice(5)), datasets:[{ label:'Completed', data:completedPerDay, borderColor:'#10b981', backgroundColor:'rgba(16,185,129,.15)', fill:true, tension:.3 }] },
+    options:{ plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'var(--text-dim)'}}, y:{ticks:{color:'var(--text-dim)'}, beginAtZero:true}} }
+  });
+}
+function lastNDays(n){
+  const out=[]; const now=new Date();
+  for(let i=n-1;i>=0;i--){ const d=new Date(now); d.setDate(d.getDate()-i); out.push(fmtDate(d)); }
+  return out;
+}
+
+/* ---------- Dashboard status preview popup ---------- */
+const STATUS_PREVIEW_LIMIT = 300; // keep the popup snappy even with huge datasets
+function recordSummaryLine(rec){
+  // Pull a short human-readable label out of whichever schema this record uses.
+  if(rec.formId){
+    const form = App.forms.find(f=>f.id===rec.formId);
+    if(form){
+      const first = form.fields.map(f=>rec.cells[f.id]).find(v=>v && String(v).trim());
+      return first ? `${escapeAttr(first)} <span class="muted small">· ${escapeAttr(form.name)}</span>` : `<span class="muted small">${escapeAttr(form.name)} entry</span>`;
+    }
+  }
+  const firstCol = App.columns.find(c=>rec.cells[c.id] && String(rec.cells[c.id]).trim());
+  return firstCol ? escapeAttr(rec.cells[firstCol.id]) : '<span class="muted small">(no data)</span>';
+}
+function openStatusPreviewModal(statusKey, label, scopedRecords){
+  const base = scopedRecords || App.records;
+  const list = statusKey ? base.filter(r=>r.status===statusKey) : [...base];
+  list.sort((a,b)=>(b.updatedAt||'').localeCompare(a.updatedAt||''));
+  const shown = list.slice(0, STATUS_PREVIEW_LIMIT);
+
+  const host = document.getElementById('modalHost');
+  const rowsHtml = shown.length ? shown.map(rec=>`
+    <div class="card" data-rec="${rec.id}" style="padding:10px; margin-bottom:8px; cursor:pointer;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+        <div style="min-width:0;">
+          <div style="font-weight:600;">${recordSummaryLine(rec)}</div>
+          ${rec.remarks ? `<div class="small muted" style="margin-top:2px;">💬 ${escapeAttr(rec.remarks.slice(0,120))}${rec.remarks.length>120?'…':''}</div>` : ''}
+          <div class="small muted" style="margin-top:4px;">${rec.date||''} ${rec.time||''}${rec.dueDate ? ' · Due '+rec.dueDate+' · ' : ''}${rec.dueDate ? daysRemainingHtml(rec.dueDate) : ''}</div>
+        </div>
+        <span class="pill" style="background:${statusColorVar(rec.status)}; flex-shrink:0;"><span class="dot"></span>${rec.status}</span>
+      </div>
+    </div>`).join('') : `<div class="empty-state"><div class="ic">▤</div>No records with this status yet.</div>`;
+
+  host.innerHTML = `<div class="modal-backdrop"><div class="modal bracket">
+    <div class="modal-header"><h3>${escapeAttr(label)} <span class="muted small">(${list.length.toLocaleString()})</span></h3><button class="icon-btn" id="spClose">✕</button></div>
+    ${list.length>STATUS_PREVIEW_LIMIT ? `<p class="small muted">Showing the ${STATUS_PREVIEW_LIMIT} most recently updated — refine in Data Sheet or Reports to see the rest.</p>` : ''}
+    <div>${rowsHtml}</div>
+  </div></div>`;
+
+  document.getElementById('spClose').onclick = ()=>host.innerHTML='';
+  host.querySelectorAll('[data-stop]').forEach(a=>{ a.onclick = (e)=>e.stopPropagation(); });
+  host.querySelectorAll('[data-rec]').forEach(card=>{
+    card.onclick = ()=>{
+      const rec = App.records.find(r=>r.id===card.dataset.rec); if(!rec) return;
+      host.innerHTML='';
+      if(rec.formId){
+        const form = App.forms.find(f=>f.id===rec.formId);
+        if(form){ goTo('forms'); openFormTable(form); return; }
+      }
+      App.statusFilter=''; App.searchTerm=''; document.getElementById('searchBox').value='';
+      document.getElementById('filterStatus').value='';
+      goTo('sheet');
+    };
+  });
+}
+
+/* ---------------------------------------------------------------
+   14. REPORTS
+---------------------------------------------------------------- */
+let repPie, repDaily, repWeekly, repMonthly;
+let repFilteredCache = [];
+
+function reportFilteredRecords(){
+  const from = document.getElementById('repFrom').value;
+  const to = document.getElementById('repTo').value;
+  const status = document.getElementById('repStatus').value;
+  const kw = document.getElementById('repKeyword').value.trim().toLowerCase();
+  return App.records.filter(r=>{
+    if(from && r.date < from) return false;
+    if(to && r.date > to) return false;
+    if(status && r.status !== status) return false;
+    if(kw){
+      const hay = [...Object.values(r.cells||{}), r.status, r.remarks, r.assignedTo, r.tags].join(' ').toLowerCase();
+      if(!hay.includes(kw)) return false;
+    }
+    return true;
+  });
+}
+document.getElementById('btnRepApply').onclick = ()=>renderReports(false);
+document.getElementById('btnRepReset').onclick = ()=>{
+  document.getElementById('repFrom').value=''; document.getElementById('repTo').value='';
+  document.getElementById('repStatus').value=''; document.getElementById('repKeyword').value='';
+  renderReports(false);
+};
+
+function renderReports(){
+  const data = reportFilteredRecords();
+  repFilteredCache = data;
+  const total = data.length;
+  const counts = {}; getStatusNames().forEach(s=>counts[s]=0);
+  data.forEach(r=>{ if(counts[r.status]!==undefined) counts[r.status]++; });
+  const pct = s => total ? Math.round((counts[s]/total)*100) : 0;
+
+  const today = fmtDate(new Date());
+  const todays = data.filter(r=>r.date===today).length;
+  const weekAgo = fmtDate(new Date(Date.now()-6*86400000));
+  const weekly = data.filter(r=>r.date>=weekAgo).length;
+  const monthPrefix = today.slice(0,7);
+  const monthly = data.filter(r=>(r.date||'').startsWith(monthPrefix)).length;
+
+  const summaryHost = document.getElementById('repSummary'); summaryHost.innerHTML='';
+  const items = [
+    {l:'Total Records', v:total}, {l:'Completed %', v:pct('Completed')+'%'},
+    {l:'Pending %', v:pct('Pending')+'%'}, {l:'Rejected %', v:pct('Rejected')+'%'},
+    {l:'Hold %', v:pct('Hold')+'%'}, {l:"Today's activity", v:todays},
+    {l:'Weekly activity', v:weekly}, {l:'Monthly activity', v:monthly},
+    {l:'Verified', v:counts['Verified']},
+  ];
+  items.forEach(it=>{
+    const d = document.createElement('div'); d.className='card stat-card';
+    d.innerHTML = `<div class="num">${it.v}</div><div class="label">${it.l}</div>`;
+    summaryHost.appendChild(d);
+  });
+
+  const colors = getStatusNames().map(s=>statusColorVar(s));
+  if(repPie) repPie.destroy();
+  repPie = new Chart(document.getElementById('repPie'), {
+    type:'pie', data:{labels:getStatusNames(), datasets:[{data:getStatusNames().map(s=>counts[s]), backgroundColor:colors}]},
+    options:{plugins:{legend:{position:'bottom', labels:{color:'var(--text-dim)'}}}}
+  });
+
+  const days = lastNDays(14);
+  const perDay = days.map(d=>data.filter(r=>r.date===d).length);
+  if(repDaily) repDaily.destroy();
+  repDaily = new Chart(document.getElementById('repDaily'), {
+    type:'line', data:{labels:days.map(d=>d.slice(5)), datasets:[{data:perDay, borderColor:'#22d3ee', backgroundColor:'rgba(34,211,238,.15)', fill:true, tension:.3}]},
+    options:{plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'var(--text-dim)'}},y:{ticks:{color:'var(--text-dim)'}, beginAtZero:true}}}
+  });
+
+  const weeks = lastNWeeks(8);
+  const perWeek = weeks.map(w=>data.filter(r=>r.date>=w.start && r.date<=w.end).length);
+  if(repWeekly) repWeekly.destroy();
+  repWeekly = new Chart(document.getElementById('repWeekly'), {
+    type:'bar', data:{labels:weeks.map(w=>w.label), datasets:[{data:perWeek, backgroundColor:'#818cf8'}]},
+    options:{plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'var(--text-dim)'}},y:{ticks:{color:'var(--text-dim)'}, beginAtZero:true}}}
+  });
+
+  const months = lastNMonths(6);
+  const perMonth = months.map(m=>data.filter(r=>(r.date||'').startsWith(m)).length);
+  if(repMonthly) repMonthly.destroy();
+  repMonthly = new Chart(document.getElementById('repMonthly'), {
+    type:'bar', data:{labels:months, datasets:[{data:perMonth, backgroundColor:'#10b981'}]},
+    options:{plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'var(--text-dim)'}},y:{ticks:{color:'var(--text-dim)'}, beginAtZero:true}}}
+  });
+}
+function lastNWeeks(n){
+  const out=[]; const now=new Date();
+  for(let i=n-1;i>=0;i--){
+    const end = new Date(now); end.setDate(end.getDate()-i*7);
+    const start = new Date(end); start.setDate(start.getDate()-6);
+    out.push({start:fmtDate(start), end:fmtDate(end), label:fmtDate(start).slice(5)});
+  }
+  return out;
+}
+function lastNMonths(n){
+  const out=[]; const now=new Date();
+  for(let i=n-1;i>=0;i--){ const d=new Date(now.getFullYear(), now.getMonth()-i, 1); out.push(`${d.getFullYear()}-${pad2(d.getMonth()+1)}`); }
+  return out;
+}
+
+/* ---------------------------------------------------------------
+   15. EXPORTS — CSV / Excel / PDF / Print
+---------------------------------------------------------------- */
+function recordsToRows(recs){
+  const cols = App.columns;
+  const header = ['Status', ...cols.map(c=>c.label), 'Remarks','Date','Time','Due Date','Days Remaining','Assigned To','Priority','Tags'];
+  const body = recs.map(r=>{
+    const d = daysRemaining(r.dueDate);
+    return [r.status, ...cols.map(c=>r.cells[c.id]||''), r.remarks||'', r.date||'', r.time||'', r.dueDate||'', d===null?'':d, r.assignedTo||'', r.priority||'', r.tags||''];
+  });
+  return {header, body};
+}
+function toCSV(header, body){
+  const esc = v => `"${String(v).replace(/"/g,'""')}"`;
+  return [header.map(esc).join(','), ...body.map(row=>row.map(esc).join(','))].join('\r\n');
+}
+document.getElementById('btnExpCSV').onclick = ()=>{
+  const {header, body} = recordsToRows(App.filtered.length ? App.filtered : App.records.filter(r=>!r.formId));
+  downloadBlob(toCSV(header,body), `scansheet-data-${fmtDate(new Date())}.csv`, 'text/csv');
+};
+document.getElementById('btnExpXLSX').onclick = ()=>{
+  const {header, body} = recordsToRows(App.filtered.length ? App.filtered : App.records.filter(r=>!r.formId));
+  const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Data');
+  XLSX.writeFile(wb, `scansheet-data-${fmtDate(new Date())}.xlsx`);
+};
+document.getElementById('btnExpPDF').onclick = ()=>{
+  const {header, body} = recordsToRows(App.filtered.length ? App.filtered : App.records.filter(r=>!r.formId));
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({orientation:'landscape'});
+  doc.setFontSize(14); doc.text('ScanSheet — Data Export', 14, 14);
+  doc.autoTable({ head:[header], body, startY:20, styles:{fontSize:7} });
+  doc.save(`scansheet-data-${fmtDate(new Date())}.pdf`);
+};
+
+/* Report table exports use the global column schema, so custom-form
+   entries (which have their own field schema) are excluded here —
+   each form has its own dedicated export on the Forms page. Charts
+   and summary counts above still include every record. */
+function reportExportRows(){ return recordsToRows(repFilteredCache.filter(r=>!r.formId)); }
+document.getElementById('btnRepCSV').onclick = ()=>{
+  const {header, body} = reportExportRows();
+  downloadBlob(toCSV(header,body), `scansheet-report-${fmtDate(new Date())}.csv`, 'text/csv');
+};
+document.getElementById('btnRepXLSX').onclick = ()=>{
+  const {header, body} = reportExportRows();
+  const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Report');
+  XLSX.writeFile(wb, `scansheet-report-${fmtDate(new Date())}.xlsx`);
+};
+document.getElementById('btnRepPDF').onclick = ()=>{
+  const {header, body} = reportExportRows();
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({orientation:'landscape'});
+  doc.setFontSize(14); doc.text('ScanSheet — Report', 14, 14);
+  const counts={}; getStatusNames().forEach(s=>counts[s]=0); repFilteredCache.forEach(r=>{if(counts[r.status]!==undefined)counts[r.status]++;});
+  doc.setFontSize(9);
+  doc.text(`Total: ${repFilteredCache.length}  |  `+getStatusNames().map(s=>`${s}: ${counts[s]}`).join('  '), 14, 21);
+  doc.autoTable({ head:[header], body, startY:26, styles:{fontSize:7} });
+  doc.save(`scansheet-report-${fmtDate(new Date())}.pdf`);
+};
+document.getElementById('btnRepPrint').onclick = ()=>{ window.print(); };
+
+/* ---------------------------------------------------------------
+   15b. CUSTOM FORM BUILDER
+   Lets the person design a form from four element types (Number,
+   Short Text, Long Text, Dropdown). Every form automatically gets a
+   Status column and a Comment column. Filling the form creates a
+   record in the shared records store (tagged with formId), which
+   renders as that form's own table, feeds Dashboard/Reports totals
+   like any other record, and exports to Excel/CSV/PDF.
+---------------------------------------------------------------- */
+const FIELD_TYPES = [
+  {id:'number', label:'Number'},
+  {id:'short',  label:'Short Text'},
+  {id:'long',   label:'Long Text'},
+  {id:'dropdown', label:'Dropdown'}
+];
+let builderDraft = null;   // {id, name, fields:[{id,label,type,options,required}]}
+let activeForm = null;     // form currently open in the table view
+let formGridSortCol = null, formGridSortDir = 1, formSearchTerm = '';
+
+function formId(){ return 'form_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+function fieldId(){ return 'fld_'+Math.random().toString(36).slice(2,8); }
+
+async function saveForms(){ await DB.setMeta('forms', App.forms); }
+
+/* ---------- Forms list page ---------- */
+function showFormsList(){
+  document.getElementById('formsListView').classList.remove('hidden');
+  document.getElementById('formTableView').classList.add('hidden');
+}
+function renderFormsList(){
+  const host = document.getElementById('formsList');
+  if(!App.forms.length){
+    host.innerHTML = `<div class="empty-state"><div class="ic">🧩</div>No custom forms yet — tap "+ New Form" to design one.</div>`;
+    return;
+  }
+  host.innerHTML='';
+  App.forms.forEach(form=>{
+    const count = App.records.filter(r=>r.formId===form.id).length;
+    const card = document.createElement('div'); card.className='card'; card.style.marginBottom='10px';
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
+        <div>
+          <h3 style="margin-bottom:2px;">${escapeAttr(form.name)}</h3>
+          <div class="small muted">${form.fields.length} field(s) + Status + Comment · ${count} entr${count===1?'y':'ies'}</div>
+          <div style="margin-top:6px;">${form.fields.map(f=>`<span class="chip">${escapeAttr(f.label)} · ${FIELD_TYPES.find(t=>t.id===f.type).label}</span>`).join('')}</div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn btn-sm btn-primary" data-act="fill">📝 Fill</button>
+        <button class="btn btn-sm" data-act="table">📋 View table</button>
+        <button class="btn btn-sm" data-act="edit">✎ Edit</button>
+        <button class="btn btn-sm btn-danger" data-act="delete">🗑 Delete</button>
+      </div>`;
+    card.querySelector('[data-act="fill"]').onclick = ()=>openFillFormModal(form);
+    card.querySelector('[data-act="table"]').onclick = ()=>openFormTable(form);
+    card.querySelector('[data-act="edit"]').onclick = ()=>openFormBuilderModal(form);
+    card.querySelector('[data-act="delete"]').onclick = ()=>deleteForm(form);
+    host.appendChild(card);
+  });
+}
+document.getElementById('btnNewForm').onclick = ()=>openFormBuilderModal(null);
+document.getElementById('btnBackToForms').onclick = ()=>{ showFormsList(); renderFormsList(); };
+
+async function deleteForm(form){
+  confirmModal(`Delete "${form.name}"?`, 'This removes the form and every entry saved under it. This cannot be undone.', async ()=>{
+    const ids = App.records.filter(r=>r.formId===form.id).map(r=>r.id);
+    App.records = App.records.filter(r=>r.formId!==form.id);
+    await DB.deleteRecords(ids);
+    markDeleted(ids);
+    App.forms = App.forms.filter(f=>f.id!==form.id);
+    await saveForms();
+    showFormsList(); renderFormsList(); renderDashboard();
+    toast('Form deleted');
+  });
+}
+
+/* ---------- Form builder modal (create / edit) ---------- */
+function openFormBuilderModal(existingForm){
+  builderDraft = existingForm
+    ? JSON.parse(JSON.stringify(existingForm))
+    : { id: formId(), name:'', fields:[] };
+
+  const host = document.getElementById('modalHost');
+  host.innerHTML = `<div class="modal-backdrop"><div class="modal bracket">
+    <div class="modal-header"><h3>${existingForm?'Edit Form':'New Form'}</h3><button class="icon-btn" id="fbClose">✕</button></div>
+
+    <div class="field"><label>Form name</label>
+      <input type="text" id="fbName" class="field-input" placeholder="e.g. Loan Document Intake" value="${escapeAttr(builderDraft.name)}">
+    </div>
+
+    <div class="field">
+      <label>Fields</label>
+      <div id="fbFieldsList"></div>
+    </div>
+
+    <div class="btn-row">
+      ${FIELD_TYPES.map(t=>`<button type="button" class="btn btn-sm" data-add-type="${t.id}">+ ${t.label}</button>`).join('')}
+    </div>
+
+    <p class="small muted" style="margin-top:10px;">Every entry in this form automatically gets a <strong>Status</strong> (Pending/Completed/Rejected/Hold/Follow Up/Verified) and a <strong>Comment</strong> box — no need to add them here.</p>
+
+    <div class="btn-row" style="justify-content:flex-end; margin-top:10px;">
+      <button class="btn btn-primary" id="fbSave">✓ Save form</button>
+    </div>
+  </div></div>`;
+
+  renderBuilderFields();
+  document.getElementById('fbClose').onclick = ()=>host.innerHTML='';
+  document.querySelectorAll('[data-add-type]').forEach(btn=>{
+    btn.onclick = ()=>{
+      builderDraft.fields.push({ id:fieldId(), label:'', type:btn.dataset.addType, options:'', required:false });
+      renderBuilderFields();
+    };
+  });
+  document.getElementById('fbSave').onclick = saveBuilderForm;
+}
+
+function renderBuilderFields(){
+  const list = document.getElementById('fbFieldsList');
+  if(!builderDraft.fields.length){
+    list.innerHTML = `<p class="small muted">No fields yet — add Number, Short Text, Long Text or Dropdown below.</p>`;
+    return;
+  }
+  list.innerHTML='';
+  builderDraft.fields.forEach((f,idx)=>{
+    const row = document.createElement('div');
+    row.className='card'; row.style.cssText='padding:10px; margin-bottom:8px; background:var(--input-bg);';
+    row.innerHTML = `
+      <div class="btn-row" style="justify-content:space-between; margin-bottom:6px;">
+        <span class="small" style="font-weight:700;">${FIELD_TYPES.find(t=>t.id===f.type).label}</span>
+        <div class="btn-row" style="gap:4px;">
+          ${idx>0?'<button type="button" class="icon-btn" data-mv="up" style="width:28px;height:28px;">↑</button>':''}
+          ${idx<builderDraft.fields.length-1?'<button type="button" class="icon-btn" data-mv="down" style="width:28px;height:28px;">↓</button>':''}
+          <button type="button" class="icon-btn" data-mv="del" style="width:28px;height:28px;">✕</button>
+        </div>
+      </div>
+      <input type="text" class="field-input" data-fb="label" placeholder="Field label (e.g. Application No.)" value="${escapeAttr(f.label)}" style="margin-bottom:${f.type==='dropdown'?'6px':'0'};">
+      ${f.type==='dropdown' ? `<input type="text" class="field-input" data-fb="options" placeholder="Options, comma separated (e.g. Yes, No, N/A)" value="${escapeAttr(f.options)}">` : ''}
+      <label style="display:flex; align-items:center; gap:6px; margin-top:6px; font-size:.78rem; color:var(--text-dim);">
+        <input type="checkbox" data-fb="required" ${f.required?'checked':''}> Required
+      </label>`;
+    row.querySelector('[data-fb="label"]').oninput = (e)=>{ f.label = e.target.value; };
+    const optInp = row.querySelector('[data-fb="options"]'); if(optInp) optInp.oninput = (e)=>{ f.options = e.target.value; };
+    row.querySelector('[data-fb="required"]').onchange = (e)=>{ f.required = e.target.checked; };
+    const up = row.querySelector('[data-mv="up"]'); if(up) up.onclick = ()=>{ [builderDraft.fields[idx-1],builderDraft.fields[idx]] = [builderDraft.fields[idx],builderDraft.fields[idx-1]]; renderBuilderFields(); };
+    const down = row.querySelector('[data-mv="down"]'); if(down) down.onclick = ()=>{ [builderDraft.fields[idx+1],builderDraft.fields[idx]] = [builderDraft.fields[idx],builderDraft.fields[idx+1]]; renderBuilderFields(); };
+    row.querySelector('[data-mv="del"]').onclick = ()=>{ builderDraft.fields.splice(idx,1); renderBuilderFields(); };
+    list.appendChild(row);
+  });
+}
+
+async function saveBuilderForm(){
+  const name = document.getElementById('fbName').value.trim();
+  if(!name){ toast('Give the form a name'); return; }
+  if(!builderDraft.fields.length){ toast('Add at least one field'); return; }
+  if(builderDraft.fields.some(f=>!f.label.trim())){ toast('Every field needs a label'); return; }
+  builderDraft.name = name;
+
+  const i = App.forms.findIndex(f=>f.id===builderDraft.id);
+  if(i>=0) App.forms[i] = builderDraft; else App.forms.push(builderDraft);
+  await saveForms();
+
+  document.getElementById('modalHost').innerHTML='';
+  showFormsList(); renderFormsList(); renderDashboardStatsOnly();
+  toast('Form saved');
+}
+
+/* ---------- Fill form modal (creates a record) ---------- */
+let fillFormStatus = App.settings.defaultStatus;
+function openFillFormModal(form){
+  fillFormStatus = App.settings.defaultStatus;
+  const host = document.getElementById('modalHost');
+  const now = new Date();
+
+  const fieldsHtml = form.fields.map(f=>{
+    if(f.type==='number') return `<div class="field"><label>${escapeAttr(f.label)}${f.required?' *':''}</label><input type="number" class="field-input" data-field-id="${f.id}"></div>`;
+    if(f.type==='short')  return `<div class="field"><label>${escapeAttr(f.label)}${f.required?' *':''}</label><input type="text" class="field-input" data-field-id="${f.id}"></div>`;
+    if(f.type==='long')   return `<div class="field"><label>${escapeAttr(f.label)}${f.required?' *':''}</label><textarea class="field-input" rows="3" style="width:100%; resize:vertical; font-family:inherit;" data-field-id="${f.id}"></textarea></div>`;
+    if(f.type==='dropdown'){
+      const opts = f.options.split(',').map(o=>o.trim()).filter(Boolean);
+      return `<div class="field"><label>${escapeAttr(f.label)}${f.required?' *':''}</label>
+        <select class="field-input" data-field-id="${f.id}"><option value="">— select —</option>${opts.map(o=>`<option>${escapeAttr(o)}</option>`).join('')}</select></div>`;
+    }
+    return '';
+  }).join('');
+
+  host.innerHTML = `<div class="modal-backdrop"><div class="modal bracket">
+    <div class="modal-header"><h3>📝 ${escapeAttr(form.name)}</h3><button class="icon-btn" id="ffClose">✕</button></div>
+
+    ${fieldsHtml}
+
+    <div class="field"><label>Status</label><div class="btn-row" id="ffStatusRow"></div></div>
+    <div class="field"><label>Comment</label>
+      <textarea id="ffComment" class="field-input" rows="3" style="width:100%; resize:vertical; font-family:inherit;" placeholder="Add a comment…"></textarea>
+    </div>
+    <div class="field"><label>Due Date <span class="muted" style="text-transform:none; font-weight:400;">(optional)</span></label>
+      <input type="date" id="ffDueDate" class="field-input">
+    </div>
+
+    <div class="btn-row" style="justify-content:flex-end; margin-top:6px;">
+      <button class="btn" id="ffSaveAnother">Save &amp; add another</button>
+      <button class="btn btn-primary" id="ffSave">✓ Save entry</button>
+    </div>
+  </div></div>`;
+
+  renderFillStatusButtons();
+  document.getElementById('ffClose').onclick = ()=>host.innerHTML='';
+  document.getElementById('ffSave').onclick = ()=>submitFillForm(form, false);
+  document.getElementById('ffSaveAnother').onclick = ()=>submitFillForm(form, true);
+}
+function renderFillStatusButtons(){
+  const row = document.getElementById('ffStatusRow');
+  row.innerHTML = getStatusNames().map(s=>{
+    const active = s===fillFormStatus, color = statusColorVar(s);
+    return `<button type="button" class="btn btn-sm ff-status-btn" data-status="${s}"
+      style="border-color:${color}; ${active?`background:${color}; color:#fff;`:`background:transparent; color:${color};`}">${s}</button>`;
+  }).join('');
+  row.querySelectorAll('.ff-status-btn').forEach(btn=>{ btn.onclick=()=>{ fillFormStatus=btn.dataset.status; renderFillStatusButtons(); }; });
+}
+async function submitFillForm(form, addAnother){
+  const cells = {};
+  let missing = false;
+  form.fields.forEach(f=>{
+    const inp = document.querySelector(`#modalHost [data-field-id="${f.id}"]`);
+    const val = inp ? inp.value.trim() : '';
+    if(f.required && !val) missing = true;
+    cells[f.id] = val;
+  });
+  if(missing){ toast('Please fill all required fields'); return; }
+
+  const rec = newRecord(cells);
+  rec.formId = form.id;
+  rec.status = fillFormStatus;
+  rec.remarks = document.getElementById('ffComment').value.trim();
+  rec.dueDate = document.getElementById('ffDueDate').value || '';
+
+  App.records.push(rec);
+  pushHistory({type:'add', before:[], after:[clone(rec)]});
+  await DB.putRecord(rec);
+
+  vibrate(15);
+  toast('Entry saved to "'+form.name+'"');
+  renderDashboard();
+
+  if(addAnother){ openFillFormModal(form); }
+  else { document.getElementById('modalHost').innerHTML=''; openFormTable(form); }
+}
+
+/* ---------- Per-form table view (own grid, own export) ---------- */
+document.getElementById('formSearchBox').oninput = (e)=>{ formSearchTerm = e.target.value; renderFormGrid(); };
+document.getElementById('btnFillFormFromTable').onclick = ()=>{ if(activeForm) openFillFormModal(activeForm); };
+document.getElementById('btnFormDelete').onclick = ()=>{ if(activeForm) deleteForm(activeForm); };
+
+function openFormTable(form){
+  activeForm = form; formSearchTerm=''; formGridSortCol=null;
+  document.getElementById('formSearchBox').value='';
+  document.getElementById('formsListView').classList.add('hidden');
+  document.getElementById('formTableView').classList.remove('hidden');
+  document.getElementById('formTableTitle').textContent = form.name;
+  renderFormGrid();
+}
+
+function formGridColumns(form){
+  return [
+    {id:'__select', label:'', w:40, kind:'select'},
+    {id:'status', label:'Status', w:132, kind:'status', sortable:true},
+    ...form.fields.map(f=>({id:f.id, label:f.label, w:150, kind: f.type==='dropdown' ? 'dropdown' : (f.type==='number'?'number':'text'), options:f.options, sortable:true})),
+    {id:'remarks', label:'Comment', w:220, kind:'text', sortable:true},
+    {id:'date', label:'Date', w:110, kind:'date', sortable:true},
+    {id:'dueDate', label:'Due Date', w:120, kind:'duedate', sortable:true},
+    {id:'daysRemaining', label:'Days Remaining', w:130, kind:'daysremaining', sortable:true},
+  ];
+}
+function formFilteredRecords(form){
+  const term = formSearchTerm.trim().toLowerCase();
+  let recs = App.records.filter(r=>r.formId===form.id);
+  if(term){
+    recs = recs.filter(r=>{
+      const hay = [...Object.values(r.cells||{}), r.status, r.remarks, r.date].join(' ').toLowerCase();
+      return hay.includes(term);
+    });
+  }
+  if(formGridSortCol){
+    recs = [...recs].sort((a,b)=>{
+      const va = getSortValue(a, formGridSortCol), vb = getSortValue(b, formGridSortCol);
+      if(va<vb) return -1*formGridSortDir; if(va>vb) return 1*formGridSortDir; return 0;
+    });
+  }
+  return recs;
+}
+function buildFormRowEl(rec, cols){
+  const row = document.createElement('div'); row.className='grid-row'+(App.selection.has(rec.id)?' selected':'');
+  row.style.height=ROW_H+'px'; row.dataset.id=rec.id;
+  cols.forEach(c=>{
+    const cell = document.createElement('div'); cell.className='gcell'; cell.style.width=c.w+'px';
+    if(c.kind==='select'){
+      cell.classList.add('select-col');
+      cell.innerHTML = `<input type="checkbox" ${App.selection.has(rec.id)?'checked':''}>`;
+      cell.querySelector('input').onclick=(e)=>{ e.stopPropagation(); if(e.target.checked) App.selection.add(rec.id); else App.selection.delete(rec.id); row.classList.toggle('selected', e.target.checked); };
+    } else if(c.kind==='status'){
+      cell.classList.add('status-col'); cell.innerHTML = statusPillHtml(rec.status);
+      cell.onclick = ()=>cycleStatus(rec,1);
+      attachSwipe(cell, rec);
+    } else if(c.kind==='dropdown'){
+      const opts = (c.options||'').split(',').map(o=>o.trim()).filter(Boolean);
+      cell.innerHTML = `<select>${['',...opts].map(o=>`<option ${o===(rec.cells[c.id]||'')?'selected':''}>${o||'—'}</option>`).join('')}</select>`;
+      cell.querySelector('select').onchange=(e)=>updateCell(rec, c.id, e.target.value===''?'':e.target.value);
+    } else if(c.kind==='date'){
+      cell.innerHTML = `<input type="date" value="${rec.date||''}">`;
+      cell.querySelector('input').onchange=(e)=>updateField(rec,'date',e.target.value);
+    } else if(c.kind==='duedate'){
+      cell.innerHTML = `<input type="date" value="${rec.dueDate||''}">`;
+      cell.querySelector('input').onchange=(e)=>updateField(rec,'dueDate',e.target.value);
+    } else if(c.kind==='daysremaining'){
+      cell.innerHTML = daysRemainingHtml(rec.dueDate);
+    } else {
+      const val = c.id==='remarks' ? (rec.remarks??'') : (rec.cells[c.id]??'');
+      cell.innerHTML = `<input type="${c.kind==='number'?'number':'text'}" value="${escapeAttr(val)}">`;
+      cell.querySelector('input').onchange=(e)=>{ if(c.id==='remarks') updateField(rec,'remarks',e.target.value); else updateCell(rec,c.id,e.target.value); };
+    }
+    row.appendChild(cell);
+  });
+  return row;
+}
+function renderFormGrid(){
+  if(!activeForm) return;
+  const form = activeForm;
+  const filtered = formFilteredRecords(form);
+  const cols = formGridColumns(form);
+  const totalW = cols.reduce((s,c)=>s+c.w,0);
+
+  const container = document.getElementById('formGridScroll');
+  container.innerHTML='';
+  const wrapper = document.createElement('div'); wrapper.style.minWidth = totalW+'px';
+
+  const head = document.createElement('div'); head.className='grid-head-row'; head.style.minWidth=totalW+'px';
+  cols.forEach(c=>{
+    const d = document.createElement('div'); d.className='gcell'+(c.sortable?' sortable':''); d.style.width=c.w+'px'; d.textContent=c.label;
+    if(c.sortable){
+      d.onclick=()=>{ if(formGridSortCol===c.id) formGridSortDir*=-1; else { formGridSortCol=c.id; formGridSortDir=1; } renderFormGrid(); };
+      if(formGridSortCol===c.id) d.textContent += formGridSortDir===1?' ▲':' ▼';
+    }
+    head.appendChild(d);
+  });
+  wrapper.appendChild(head);
+
+  const spacer = document.createElement('div'); spacer.className='spacer-row'; spacer.style.position='relative';
+  spacer.style.height = (filtered.length*ROW_H)+'px';
+  const visWrap = document.createElement('div'); visWrap.style.position='absolute'; visWrap.style.top='0'; visWrap.style.left='0'; visWrap.style.minWidth=totalW+'px';
+  spacer.appendChild(visWrap);
+  wrapper.appendChild(spacer);
+  container.appendChild(wrapper);
+
+  if(!filtered.length){
+    visWrap.innerHTML = `<div class="empty-state"><div class="ic">📝</div>No entries yet — tap "Fill form" to add the first one.</div>`;
+    spacer.style.height='auto';
+    return;
+  }
+  function draw(){
+    const scrollTop = container.scrollTop, viewH = container.clientHeight||400;
+    const startIdx = Math.max(0, Math.floor(scrollTop/ROW_H)-5);
+    const endIdx = Math.min(filtered.length, Math.ceil((scrollTop+viewH)/ROW_H)+5);
+    visWrap.style.transform = `translateY(${startIdx*ROW_H}px)`;
+    visWrap.innerHTML='';
+    const frag = document.createDocumentFragment();
+    for(let i=startIdx;i<endIdx;i++) frag.appendChild(buildFormRowEl(filtered[i], cols));
+    visWrap.appendChild(frag);
+  }
+  container.onscroll = ()=>window.requestAnimationFrame(draw);
+  draw();
+}
+
+/* ---------- Per-form export (Excel / CSV / PDF) ---------- */
+function formRecordsToRows(form){
+  const header = ['Status', ...form.fields.map(f=>f.label), 'Comment', 'Date', 'Time', 'Due Date', 'Days Remaining'];
+  const body = App.records.filter(r=>r.formId===form.id).map(r=>{
+    const d = daysRemaining(r.dueDate);
+    return [r.status, ...form.fields.map(f=>r.cells[f.id]||''), r.remarks||'', r.date||'', r.time||'', r.dueDate||'', d===null?'':d];
+  });
+  return {header, body};
+}
+document.getElementById('btnFormExpCSV').onclick = ()=>{
+  if(!activeForm) return;
+  const {header, body} = formRecordsToRows(activeForm);
+  downloadBlob(toCSV(header,body), `${activeForm.name.replace(/\s+/g,'-').toLowerCase()}-${fmtDate(new Date())}.csv`, 'text/csv');
+};
+document.getElementById('btnFormExpXLSX').onclick = ()=>{
+  if(!activeForm) return;
+  const {header, body} = formRecordsToRows(activeForm);
+  const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, activeForm.name.slice(0,28) || 'Form');
+  XLSX.writeFile(wb, `${activeForm.name.replace(/\s+/g,'-').toLowerCase()}-${fmtDate(new Date())}.xlsx`);
+};
+document.getElementById('btnFormExpPDF').onclick = ()=>{
+  if(!activeForm) return;
+  const {header, body} = formRecordsToRows(activeForm);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({orientation:'landscape'});
+  doc.setFontSize(14); doc.text(`ScanSheet — ${activeForm.name}`, 14, 14);
+  doc.autoTable({ head:[header], body, startY:20, styles:{fontSize:7} });
+  doc.save(`${activeForm.name.replace(/\s+/g,'-').toLowerCase()}-${fmtDate(new Date())}.pdf`);
+};
+
+/* ---------------------------------------------------------------
+   15c. GOOGLE SHEETS / DRIVE SYNC
+   Talks to a Google Apps Script Web App (deployed by you — see the
+   included Code.gs + setup guide) over a small documented JSON
+   protocol. Uses Content-Type: text/plain on POST bodies on purpose:
+   Apps Script Web Apps don't answer CORS preflight (OPTIONS) requests,
+   so a "simple request" content type is required to avoid the browser
+   sending one. If you already have a different Apps Script, tell me
+   its request/response shape and I'll adapt these calls to match it
+   instead of you changing your script.
+---------------------------------------------------------------- */
+const GSync = {
+  status: 'idle',     // idle | syncing | synced | error | unconfigured
+  lastError: '',
+  pushTimer: null,
+};
+
+function gsConfigured(){ return !!(App.settings.googleSync && App.settings.googleSync.url); }
+
+function setGsStatus(status, msg){
+  GSync.status = status; GSync.lastError = msg||'';
+  const icon = document.getElementById('btnGsStatus');
+  const line = document.getElementById('gsStatusLine');
+  const iconMap = { idle:'☁️', syncing:'🔄', synced:'✅', error:'⚠️', unconfigured:'☁️' };
+  if(icon) icon.textContent = iconMap[status] || '☁️';
+  if(line){
+    if(status==='unconfigured') line.textContent = 'Not connected yet — add your Web App URL above.';
+    else if(status==='syncing') line.textContent = 'Syncing…';
+    else if(status==='error') line.textContent = '⚠ '+msg;
+    else if(status==='synced'){
+      const t = App.settings.googleSync.lastSyncedAt ? new Date(App.settings.googleSync.lastSyncedAt).toLocaleString() : 'never';
+      const pending = App.records.filter(r=>!App.settings.googleSync.lastSyncedAt || r.updatedAt > App.settings.googleSync.lastSyncedAt).length;
+      line.textContent = `Last synced ${t}${pending?` · ${pending} change(s) pending`:''}`;
+    } else line.textContent = '';
+  }
+}
+
+async function gsCall(action, extra){
+  if(!gsConfigured()) throw new Error('No Web App URL configured');
+  const body = { token: App.settings.googleSync.token || '', action, ...extra };
+  const res = await fetch(App.settings.googleSync.url, {
+    method:'POST',
+    headers:{ 'Content-Type':'text/plain;charset=utf-8' }, // avoids a CORS preflight against Apps Script
+    body: JSON.stringify(body)
+  });
+  const raw = await res.text();
+  let json;
+  try{
+    json = JSON.parse(raw);
+  }catch(parseErr){
+    // The server responded, but not with JSON — almost always means the
+    // request never reached doPost at all. Give a specific, actionable
+    // reason instead of the raw "Unexpected token '<'" parser error.
+    const snippet = raw.slice(0,200);
+    let reason = 'The server returned a webpage instead of data.';
+    if(/script function not found/i.test(raw)){
+      reason = `Apps Script says "${(raw.match(/Script function not found:?\s*\S*/i)||[])[0]||'function not found'}" — the deployed URL is running an older version of Code.gs that predates doPost(). Fix: Deploy → Manage deployments → edit your deployment → Version: "New version" → Deploy. Editing the code alone does not update the live /exec URL.`;
+    } else if(/userhtmlframe|<iframe/i.test(raw)){
+      reason = 'This is Apps Script\'s HTML-page wrapper, meaning the request landed on doGet() (which serves your console\'s page) instead of doPost(). This usually means the URL in Google Sync is a "/dev" test-deployment URL rather than the real "/exec" URL — open Deploy → Manage deployments, find the row for your actual Web app deployment, and copy the URL that ends in "/exec" (not "Test deployments", which gives a /dev URL). If ScanSheet is running inside the console and auto-filled this URL, check what the console\'s own address bar shows when you open it normally — it needs to be the /exec URL too.';
+    } else if(/accounts\.google\.com|sign in|authorization required/i.test(raw)){
+      reason = 'This looks like a Google sign-in / authorization page, not your script\'s output. Fix: in Deploy → Manage deployments, confirm "Execute as: Me" and "Who has access: Anyone", then redeploy as a new version.';
+    } else if(res.status>=400){
+      reason = `The server responded with HTTP ${res.status} and non-JSON content.`;
+    }
+    throw new Error(`${reason} (raw response started with: ${snippet})`);
+  }
+  if(!res.ok) throw new Error('HTTP '+res.status+': '+(json.error||raw.slice(0,200)));
+  if(!json.ok) throw new Error(json.error || 'Server returned an error');
+  return json;
+}
+
+async function gsTestConnection(){
+  setGsStatus('syncing');
+  try{
+    const r = await gsCall('ping');
+    setGsStatus('synced', '');
+    toast('Connected — server time '+new Date(r.serverTime).toLocaleTimeString());
+  }catch(err){
+    setGsStatus('error', err.message);
+    toast('Connection failed: '+err.message);
+  }
+}
+
+async function gsPush(){
+  if(!gsConfigured()){ toast('Add your Apps Script Web App URL in Settings first'); return; }
+  setGsStatus('syncing');
+  try{
+    const since = App.settings.googleSync.lastSyncedAt;
+    const changed = since ? App.records.filter(r=>r.updatedAt > since) : App.records;
+    const payload = {
+      records: changed,
+      deletedIds: App.deletedIds,
+      columns: App.columns,
+      forms: App.forms,
+      statuses: App.settings.statuses,
+    };
+    const r = await gsCall('push', payload);
+    App.settings.googleSync.lastSyncedAt = r.serverTime || new Date().toISOString();
+    App.deletedIds = [];
+    await DB.setMeta('deletedIds', []);
+    scheduleSave();
+    setGsStatus('synced');
+    toast(`Synced ${changed.length} record(s) to Google Sheets`);
+  }catch(err){
+    setGsStatus('error', err.message);
+    toast('Sync failed: '+err.message);
+  }
+}
+
+async function gsPull(){
+  if(!gsConfigured()){ toast('Add your Apps Script Web App URL in Settings first'); return; }
+  confirmModal('Pull from Google Sheets?', 'This merges records from the sheet into this device (upsert by id) and replaces local columns, forms, and statuses with the sheet\'s copies. Local-only unsynced changes are kept.', async ()=>{
+    setGsStatus('syncing');
+    try{
+      const r = await gsCall('pull');
+      // Upsert records by id, keeping any local record that's newer (in case it hasn't been pushed yet)
+      const byId = {}; App.records.forEach(rec=>{ byId[rec.id]=rec; });
+      (r.records||[]).forEach(remote=>{
+        const local = byId[remote.id];
+        if(!local || (remote.updatedAt||'') > (local.updatedAt||'')) byId[remote.id]=remote;
+      });
+      App.records = Object.values(byId);
+      if(r.columns) App.columns = r.columns;
+      if(r.forms) App.forms = r.forms;
+      if(r.statuses && r.statuses.length) App.settings.statuses = r.statuses;
+      await DB.putRecords(App.records);
+      await DB.setMeta('columns', App.columns);
+      await DB.setMeta('forms', App.forms);
+      App.settings.googleSync.lastSyncedAt = r.serverTime || new Date().toISOString();
+      scheduleSave();
+      refreshAllViews();
+      setGsStatus('synced');
+      toast(`Pulled ${(r.records||[]).length} record(s) from Google Sheets`);
+    }catch(err){
+      setGsStatus('error', err.message);
+      toast('Pull failed: '+err.message);
+    }
+  });
+}
+
+/* Debounced auto-sync — piggybacks on the same rhythm as local autosave */
+function scheduleGoogleSync(){
+  if(!gsConfigured() || !App.settings.googleSync.autoSync) return;
+  clearTimeout(GSync.pushTimer);
+  GSync.pushTimer = setTimeout(gsPush, Math.max(3, Number(App.settings.autoSaveInterval)||5) * 1000);
+}
+
+function initGoogleSyncUI(){
+  const gs = App.settings.googleSync;
+  const inConsole = !!(typeof window.CONSOLE_API_URL === 'string' && window.CONSOLE_TOKEN);
+  document.getElementById('gsUrl').value = gs.url || '';
+  document.getElementById('gsToken').value = gs.token || '';
+  document.getElementById('gsAutoSync').checked = !!gs.autoSync;
+  document.getElementById('gsUrl').disabled = inConsole;
+  document.getElementById('gsToken').disabled = inConsole;
+  const note = document.getElementById('gsConsoleNote');
+  if(note) note.style.display = inConsole ? '' : 'none';
+  if(note && inConsole) note.textContent = `🔗 Auto-connected via Ashish's Console${App.consoleUser ? ' as '+App.consoleUser : ''} — URL and token are managed by the console, not editable here.`;
+  setGsStatus(gsConfigured() ? (gs.lastSyncedAt ? 'synced' : 'idle') : 'unconfigured');
+
+  document.getElementById('gsUrl').onchange = (e)=>{ gs.url = e.target.value.trim(); scheduleSave(); setGsStatus(gsConfigured()?'idle':'unconfigured'); };
+  document.getElementById('gsToken').onchange = (e)=>{ gs.token = e.target.value; scheduleSave(); };
+  document.getElementById('gsAutoSync').onchange = (e)=>{ gs.autoSync = e.target.checked; scheduleSave(); };
+}
+document.getElementById('btnGsTest').onclick = gsTestConnection;
+document.getElementById('btnGsPush').onclick = gsPush;
+document.getElementById('btnGsPull').onclick = gsPull;
+document.getElementById('btnGsStatus').onclick = ()=>goTo('settings');
+
+/* ---------------------------------------------------------------
+   16. REFRESH / INIT
+---------------------------------------------------------------- */
+function refreshAllViews(){
+  fillStatusSelects();
+  renderStatusColorSettings();
+  applyTheme();
+  renderDashboard();
+  renderSheetIfActive();
+  if(document.getElementById('page-reports').classList.contains('active')) renderReports();
+  if(document.getElementById('page-forms').classList.contains('active')){
+    if(activeForm) renderFormGrid(); else renderFormsList();
+  }
+}
+
+async function boot(){
+  await DB.open();
+  App.records = await DB.getAllRecords();
+  App.columns = await DB.getMeta('columns', []);
+  App.forms = await DB.getMeta('forms', []);
+  App.deletedIds = await DB.getMeta('deletedIds', []);
+  const savedSettings = await DB.getMeta('settings', null);
+  if(savedSettings){
+    App.settings = {...App.settings, ...savedSettings};
+    // Migrate from the older { statusColors:{name:color} } format if present,
+    // and always fall back to defaults if statuses somehow ended up empty.
+    if(!Array.isArray(savedSettings.statuses) || !savedSettings.statuses.length){
+      if(savedSettings.statusColors){
+        App.settings.statuses = Object.entries(savedSettings.statusColors).map(([name,color])=>({name,color}));
+      } else {
+        App.settings.statuses = DEFAULT_STATUSES.map(s=>({...s}));
+      }
+    }
+    delete App.settings.statusColors;
+    // Defensive merge in case an older save predates the googleSync block
+    App.settings.googleSync = {url:'', token:'', autoSync:false, lastSyncedAt:null, ...(savedSettings.googleSync||{})};
+  }
+
+  // Console bridge: if this file was opened as a "tool" inside Ashish's
+  // Console (Index.html injects these globals into the tool iframe),
+  // auto-connect Google Sync using that same login session instead of
+  // asking for a URL/token by hand. Injected values always win over
+  // whatever was saved locally, since a fresh console session issues a
+  // fresh token. Opened on its own (outside the console), these globals
+  // simply don't exist and everything falls back to manual Settings.
+  const inConsole = typeof window.CONSOLE_API_URL === 'string' && typeof window.CONSOLE_TOKEN === 'string' && window.CONSOLE_TOKEN;
+  if(inConsole){
+    const firstConnection = !App.settings.googleSync.url;
+    App.settings.googleSync.url = window.CONSOLE_API_URL;
+    App.settings.googleSync.token = window.CONSOLE_TOKEN;
+    if(firstConnection) App.settings.googleSync.autoSync = true;
+    App.consoleUser = window.CONSOLE_USER || '';
+  }
+
+  document.getElementById('fontSize').value = App.settings.fontScale;
+  document.getElementById('autoSaveInterval').value = App.settings.autoSaveInterval;
+  setGsStatus(gsConfigured() ? (App.settings.googleSync.lastSyncedAt ? 'synced' : 'idle') : 'unconfigured');
+
+  refreshAllViews();
+  goTo('dashboard');
+
+  // First time this device connects via the console with no local data yet,
+  // pull whatever's already in the Sheet so it doesn't look empty.
+  if(inConsole && !App.records.length && gsConfigured()){
+    gsPull();
+  }
+
+  registerServiceWorkerIfPossible();
+}
+boot();
+
+/* ---------------------------------------------------------------
+   17. PWA — manifest + service worker registration
+   This links to the real manifest.json / sw.js / icons/ files that
+   ship alongside this HTML file. If those files aren't present next
+   to it (e.g. this HTML was opened on its own, or copied elsewhere
+   without its siblings), the app keeps working normally — it just
+   won't be installable as an app icon, and stays a regular web page.
+   To generate an actual installable APK from this, host this whole
+   folder (index.html + manifest.json + sw.js + icons/) on any static
+   host (GitHub Pages, Netlify, Vercel, your own server — must be
+   HTTPS) and run the hosted URL through https://www.pwabuilder.com,
+   which packages a real Android APK from a PWA for free.
+---------------------------------------------------------------- */
+function registerServiceWorkerIfPossible(){
+  try{
+    if('serviceWorker' in navigator && (location.protocol==='https:' || location.protocol==='http:')){
+      navigator.serviceWorker.register('sw.js').catch(()=>{ /* sw.js not hosted alongside this file — non-fatal */ });
+    }
+  }catch(e){ /* non-fatal: app still works fully without PWA install */ }
+}
+</script>
+</body>
+</html>
