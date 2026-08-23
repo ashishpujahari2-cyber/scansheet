@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
-<title>ScanSheet — Data &amp; Forms Tracker</title>
+<title>Process Tracker — Data &amp; Forms Tracker</title>
 <meta name="theme-color" content="#0b1220">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -303,6 +303,35 @@ a{color:var(--accent);}
 .field label{display:block; font-size:.75rem; color:var(--text-dim); margin-bottom:5px; text-transform:uppercase; letter-spacing:.04em;}
 .field-input{width:100%;}
 
+/* ---------------------------------------------------------------
+   Comment box — checkbox / bullet toolbar + live preview
+---------------------------------------------------------------- */
+.cmt-toolbar{display:flex; gap:6px; margin-bottom:6px;}
+.cmt-toolbar button{
+  font-size:12px; padding:4px 10px; border-radius:8px; border:1px solid var(--border);
+  background:var(--input-bg); color:var(--text); cursor:pointer;
+}
+.cmt-toolbar button:active{transform:scale(.96);}
+.cmt-preview{
+  margin-top:6px; padding:8px 10px; border:1px dashed var(--border); border-radius:10px;
+  background:var(--input-bg); font-size:13.5px; min-height:20px;
+}
+.cmt-preview:empty{display:none;}
+.cmt-line{padding:2px 0; display:flex; align-items:flex-start; gap:7px; word-break:break-word;}
+.cmt-line.cmt-plain{display:block;}
+.cmt-line input[type=checkbox]{margin-top:3px; flex-shrink:0; cursor:pointer;}
+.cmt-line.cmt-check.checked span.cmt-edit{text-decoration:line-through; opacity:.55;}
+.cmt-bullet-dot{flex-shrink:0;}
+.cmt-edit{outline:none; flex:1; min-width:20px; cursor:text;}
+.cmt-edit:empty:before{content:"type here…"; opacity:.35;}
+.cmt-num{flex-shrink:0; font-weight:700; color:var(--text-dim); min-width:16px;}
+.cmt-del{flex-shrink:0; border:none; background:transparent; color:var(--text-dim); opacity:.5; cursor:pointer; font-size:12px; padding:0 2px; margin-left:auto;}
+.cmt-del:hover{opacity:1; color:var(--danger);}
+.cmt-toggle-link{
+  display:none; margin-top:6px; background:none; border:none; padding:0;
+  font-size:12px; color:var(--accent); text-decoration:underline; cursor:pointer;
+}
+
 /* Toast */
 #toast-host{position:fixed; top:calc(var(--topbar-h) + 12px + env(safe-area-inset-top)); left:0; right:0; display:flex; flex-direction:column; align-items:center; gap:8px; z-index:200; pointer-events:none;}
 .toast{background:var(--surface-strong); border:1px solid var(--border); backdrop-filter:blur(14px); padding:10px 16px; border-radius:10px; font-size:.85rem; box-shadow:var(--shadow); animation:toastIn .2s ease;}
@@ -336,7 +365,7 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
 <header class="topbar">
   <div style="display:flex; align-items:center; gap:10px;">
     <button class="icon-btn" id="btnMenu" title="Menu" aria-label="Open menu">☰</button>
-    <div class="brand"><span class="mark">⌐¬</span> ScanSheet</div>
+    <div class="brand"><span class="mark">⌐¬</span> Process Tracker</div>
   </div>
   <div class="topbar-actions">
     <button class="icon-btn" id="btnUndo" title="Undo">↺</button>
@@ -350,7 +379,7 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
 <div class="drawer-backdrop" id="drawerBackdrop"></div>
 <nav class="side-drawer" id="sideDrawer">
   <div class="drawer-header">
-    <div class="brand"><span class="mark">⌐¬</span> ScanSheet</div>
+    <div class="brand"><span class="mark">⌐¬</span> Process Tracker</div>
     <button class="icon-btn" id="btnDrawerClose" aria-label="Close menu">✕</button>
   </div>
   <div class="drawer-list">
@@ -360,7 +389,7 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
     <button class="drawer-btn" data-nav="forms"><span class="ic">🧩</span>Forms</button>
     <button class="drawer-btn" data-nav="settings"><span class="ic">⚙</span>Settings</button>
   </div>
-  <div class="drawer-footer small muted">ScanSheet · works fully offline</div>
+  <div class="drawer-footer small muted">Process Tracker · works fully offline</div>
 </nav>
 
 <!-- =================== PAGES =================== -->
@@ -563,7 +592,7 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
 
 <script>
 /* =====================================================================
-   ScanSheet — self-contained table scanner & document tracker
+   Process Tracker — self-contained data & forms tracker
    All logic is namespaced below to keep things modular.
 ===================================================================== */
 'use strict';
@@ -1003,7 +1032,7 @@ function backupPayload(){
   }, null, 0);
 }
 document.getElementById('btnBackup').onclick = ()=>{
-  downloadBlob(backupPayload(), `scansheet-backup-${fmtDate(new Date())}.json`, 'application/json');
+  downloadBlob(backupPayload(), `process-tracker-backup-${fmtDate(new Date())}.json`, 'application/json');
   toast('Backup downloaded');
 };
 document.getElementById('btnExpJSON').onclick = ()=>document.getElementById('btnBackup').click();
@@ -1238,6 +1267,240 @@ function buildRowEl(rec, cols){
   return row;
 }
 function escapeAttr(s){ return String(s).replace(/"/g,'&quot;'); }
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+/* ---------------------------------------------------------------
+   Comment box — checkbox / bullet-point / numbered-list editor
+   Storage stays a plain string (so CSV/PDF/Sheets exports and
+   search keep working untouched) using a light markdown-style
+   line syntax:
+     [ ] unchecked item      [x] checked item (shown struck-through)
+     - bullet point          plain lines pass through unchanged
+   Which box is shown adapts to what's actually in the field:
+   plain text only -> just the text box, checklist/bullets only ->
+   just the interactive list box, both -> both.
+---------------------------------------------------------------- */
+function parseCommentLine(line){
+  let m = line.match(/^\[( |x|X)\]\s?(.*)$/);
+  if(m) return {type:'check', checked: m[1].toLowerCase()==='x', text: m[2]};
+  m = line.match(/^-\s?(.*)$/);
+  if(m) return {type:'bullet', text: m[1]};
+  return {type:'plain', text: line};
+}
+function commentContentMode(text){
+  if(!text || !text.trim()) return 'plain'; // nothing typed yet -> default to the plain box
+  let hasPlain=false, hasList=false;
+  text.split('\n').forEach(line=>{
+    if(!line.trim()) return;
+    if(parseCommentLine(line).type==='plain') hasPlain=true; else hasList=true;
+  });
+  if(hasPlain && hasList) return 'mixed';
+  return hasList ? 'checklist' : 'plain';
+}
+function placeCaretAtEnd(el){
+  el.focus();
+  if(document.createRange && window.getSelection){
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+}
+const commentForceText = {}; // textareaId -> true once the person taps "Edit as plain text"
+
+/* Shows/hides the plain textarea vs. the interactive checklist box
+   based on what's currently in the field. Only wired up for the
+   free-form Comment boxes (which have a text/toggle wrapper) — form
+   fields dedicated to one list type (below) skip this entirely and
+   just stay on their list view. */
+function updateCommentBoxDisplay(textareaId, previewId){
+  const ta = document.getElementById(textareaId);
+  const box = document.getElementById(textareaId+'Box');
+  const preview = document.getElementById(previewId);
+  const toggle = document.getElementById(textareaId+'Toggle');
+  if(!ta || !box || !preview) return;
+  const mode = commentContentMode(ta.value);
+  const forced = !!commentForceText[textareaId];
+  const showText = mode==='plain' || mode==='mixed' || forced;
+  const showList = mode==='checklist' || mode==='mixed';
+  box.style.display = showText ? '' : 'none';
+  preview.style.display = showList ? '' : 'none';
+  if(toggle) toggle.style.display = (showList && !showText) ? '' : 'none';
+}
+function renderCommentPreview(textareaId, previewId){
+  const ta = document.getElementById(textareaId);
+  const preview = document.getElementById(previewId);
+  if(!ta || !preview) return;
+  const lines = ta.value.split('\n');
+  preview.innerHTML = lines.map((line, idx)=>{
+    const p = parseCommentLine(line);
+    if(p.type==='check'){
+      return `<div class="cmt-line cmt-check ${p.checked?'checked':''}">
+        <input type="checkbox" data-cmt-idx="${idx}" ${p.checked?'checked':''}>
+        <span class="cmt-edit" contenteditable="true" data-cmt-text-idx="${idx}">${escapeHtml(p.text)}</span>
+        <button type="button" class="cmt-del" data-cmt-del="${idx}" title="Remove">✕</button></div>`;
+    }
+    if(p.type==='bullet'){
+      return `<div class="cmt-line"><span class="cmt-bullet-dot">•</span>
+        <span class="cmt-edit" contenteditable="true" data-cmt-text-idx="${idx}">${escapeHtml(p.text)}</span>
+        <button type="button" class="cmt-del" data-cmt-del="${idx}" title="Remove">✕</button></div>`;
+    }
+    if(!line.trim()) return '';
+    return `<div class="cmt-line cmt-plain">${escapeHtml(line)}</div>`;
+  }).join('');
+
+  preview.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    cb.onchange = ()=>{
+      const idx = Number(cb.dataset.cmtIdx);
+      const lines2 = ta.value.split('\n');
+      const p = parseCommentLine(lines2[idx]);
+      lines2[idx] = (cb.checked ? '[x] ' : '[ ] ') + p.text;
+      ta.value = lines2.join('\n');
+      renderCommentPreview(textareaId, previewId);
+      updateCommentBoxDisplay(textareaId, previewId);
+    };
+  });
+  preview.querySelectorAll('[data-cmt-text-idx]').forEach(span=>{
+    span.oninput = ()=>{
+      const idx = Number(span.dataset.cmtTextIdx);
+      const lines2 = ta.value.split('\n');
+      const p = parseCommentLine(lines2[idx]);
+      const prefix = p.type==='check' ? (p.checked?'[x] ':'[ ] ') : '- ';
+      lines2[idx] = prefix + span.textContent;
+      ta.value = lines2.join('\n');
+      updateCommentBoxDisplay(textareaId, previewId); // no full re-render here so the caret position isn't lost mid-type
+    };
+    span.onkeydown = (e)=>{
+      if(e.key==='Enter'){
+        e.preventDefault();
+        const idx = Number(span.dataset.cmtTextIdx);
+        const lines2 = ta.value.split('\n');
+        const p = parseCommentLine(lines2[idx]);
+        lines2.splice(idx+1, 0, p.type==='check' ? '[ ] ' : '- ');
+        ta.value = lines2.join('\n');
+        renderCommentPreview(textareaId, previewId);
+        updateCommentBoxDisplay(textareaId, previewId);
+        const spans = preview.querySelectorAll('[data-cmt-text-idx]');
+        if(spans[idx+1]) placeCaretAtEnd(spans[idx+1]);
+      }
+    };
+  });
+  preview.querySelectorAll('[data-cmt-del]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const idx = Number(btn.dataset.cmtDel);
+      const lines2 = ta.value.split('\n');
+      lines2.splice(idx,1);
+      ta.value = lines2.join('\n');
+      renderCommentPreview(textareaId, previewId);
+      updateCommentBoxDisplay(textareaId, previewId);
+    };
+  });
+}
+function insertCommentLine(textareaId, previewId, kind){
+  const ta = document.getElementById(textareaId);
+  const prefix = kind==='check' ? '[ ] ' : '- ';
+  const needsNewline = ta.value.length && !ta.value.endsWith('\n');
+  ta.value += (needsNewline ? '\n' : '') + prefix;
+  renderCommentPreview(textareaId, previewId);
+  updateCommentBoxDisplay(textareaId, previewId);
+  const preview = document.getElementById(previewId);
+  const spans = preview.querySelectorAll('[data-cmt-text-idx]');
+  const last = spans[spans.length-1];
+  if(last) placeCaretAtEnd(last); else { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
+}
+function initCommentEditor(textareaId, previewId){
+  const ta = document.getElementById(textareaId);
+  commentForceText[textareaId] = false;
+  ta.addEventListener('input', ()=>{ renderCommentPreview(textareaId, previewId); updateCommentBoxDisplay(textareaId, previewId); });
+  renderCommentPreview(textareaId, previewId);
+  updateCommentBoxDisplay(textareaId, previewId);
+}
+/* Short, read-only rendering used in list/preview cards (dashboard
+   status popup, etc.) — turns the markup into plain text with a
+   strikethrough for checked items, capped to maxLen characters. */
+function commentSnippetHtml(text, maxLen){
+  if(!text) return '';
+  const parts = text.split('\n').filter(l=>l.trim()).map(line=>{
+    const p = parseCommentLine(line);
+    if(p.type==='check') return `<span${p.checked?' style="text-decoration:line-through; opacity:.6;"':''}>${escapeHtml(p.text)}</span>`;
+    if(p.type==='bullet') return `• ${escapeHtml(p.text)}`;
+    return escapeHtml(p.text);
+  });
+  let joined = parts.join(' &nbsp;·&nbsp; ');
+  // Trim on the already-escaped string is safe here since we only cut at plain-text length boundaries approximately.
+  const plainLen = parts.join(' · ').length;
+  if(plainLen > maxLen){
+    // Re-derive from plain text to truncate cleanly, then re-render the cut version.
+    let plain = text.split('\n').filter(l=>l.trim()).map(line=>{
+      const p = parseCommentLine(line);
+      return p.text;
+    }).join(' · ');
+    return escapeHtml(plain.slice(0, maxLen)) + '…';
+  }
+  return joined;
+}
+
+/* ---------------------------------------------------------------
+   Numbered-list editor — used only by Form fields of type
+   "Numbered List". Every non-empty line is one item; the visible
+   numbers are just position-based decoration re-drawn on render,
+   never stored, so reordering/deleting always renumbers cleanly.
+---------------------------------------------------------------- */
+function renderNumberedPreview(textareaId, previewId){
+  const ta = document.getElementById(textareaId);
+  const preview = document.getElementById(previewId);
+  if(!ta || !preview) return;
+  const items = ta.value.split('\n');
+  preview.innerHTML = items.map((text, idx)=>`
+    <div class="cmt-line">
+      <span class="cmt-num">${idx+1}.</span>
+      <span class="cmt-edit" contenteditable="true" data-num-idx="${idx}">${escapeHtml(text)}</span>
+      <button type="button" class="cmt-del" data-num-del="${idx}" title="Remove">✕</button>
+    </div>`).join('');
+  preview.querySelectorAll('[data-num-idx]').forEach(span=>{
+    span.oninput = ()=>{
+      const idx = Number(span.dataset.numIdx);
+      const items2 = ta.value.split('\n');
+      items2[idx] = span.textContent;
+      ta.value = items2.join('\n');
+    };
+    span.onkeydown = (e)=>{
+      if(e.key==='Enter'){
+        e.preventDefault();
+        const idx = Number(span.dataset.numIdx);
+        const items2 = ta.value.split('\n');
+        items2.splice(idx+1, 0, '');
+        ta.value = items2.join('\n');
+        renderNumberedPreview(textareaId, previewId);
+        const spans = preview.querySelectorAll('[data-num-idx]');
+        if(spans[idx+1]) placeCaretAtEnd(spans[idx+1]);
+      }
+    };
+  });
+  preview.querySelectorAll('[data-num-del]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const idx = Number(btn.dataset.numDel);
+      const items2 = ta.value.split('\n');
+      items2.splice(idx,1);
+      ta.value = items2.join('\n');
+      renderNumberedPreview(textareaId, previewId);
+    };
+  });
+}
+function insertNumberedItem(textareaId, previewId){
+  const ta = document.getElementById(textareaId);
+  const needsNewline = ta.value.length && !ta.value.endsWith('\n');
+  ta.value += (needsNewline ? '\n' : '');
+  renderNumberedPreview(textareaId, previewId);
+  const preview = document.getElementById(previewId);
+  const spans = preview.querySelectorAll('[data-num-idx]');
+  const last = spans[spans.length-1];
+  if(last) placeCaretAtEnd(last);
+}
 
 async function updateField(rec, field, value){
   const before = clone(rec);
@@ -1412,7 +1675,15 @@ function openEntryFormModal(){
 
     <div class="field">
       <label>Comment</label>
-      <textarea id="efComment" class="field-input" rows="3" placeholder="Add a comment or remark…" style="width:100%; resize:vertical; font-family:inherit;"></textarea>
+      <div class="cmt-toolbar">
+        <button type="button" id="efCmtCheck">☑ Checkbox</button>
+        <button type="button" id="efCmtBullet">• Bullet</button>
+      </div>
+      <div id="efCommentBox">
+        <textarea id="efComment" class="field-input" rows="3" placeholder="Add a comment or remark…" style="width:100%; resize:vertical; font-family:inherit;"></textarea>
+      </div>
+      <div class="cmt-preview" id="efCommentPreview"></div>
+      <button type="button" class="cmt-toggle-link" id="efCommentToggle">✎ Edit as plain text</button>
     </div>
 
     ${colFieldsHtml}
@@ -1439,6 +1710,10 @@ function openEntryFormModal(){
   </div></div>`;
 
   renderFormStatusButtons();
+  initCommentEditor('efComment', 'efCommentPreview');
+  document.getElementById('efCmtCheck').onclick = ()=>insertCommentLine('efComment', 'efCommentPreview', 'check');
+  document.getElementById('efCmtBullet').onclick = ()=>insertCommentLine('efComment', 'efCommentPreview', 'bullet');
+  document.getElementById('efCommentToggle').onclick = ()=>{ commentForceText['efComment']=true; updateCommentBoxDisplay('efComment','efCommentPreview'); document.getElementById('efComment').focus(); };
   document.getElementById('efClose').onclick = ()=>host.innerHTML='';
   document.getElementById('efSave').onclick = ()=>submitEntryForm(false);
   document.getElementById('efSaveAnother').onclick = ()=>submitEntryForm(true);
@@ -1619,7 +1894,7 @@ function openStatusPreviewModal(statusKey, label, scopedRecords){
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
         <div style="min-width:0;">
           <div style="font-weight:600;">${recordSummaryLine(rec)}</div>
-          ${rec.remarks ? `<div class="small muted" style="margin-top:2px;">💬 ${escapeAttr(rec.remarks.slice(0,120))}${rec.remarks.length>120?'…':''}</div>` : ''}
+          ${rec.remarks ? `<div class="small muted" style="margin-top:2px;">💬 ${commentSnippetHtml(rec.remarks, 120)}</div>` : ''}
           <div class="small muted" style="margin-top:4px;">${rec.date||''} ${rec.time||''}${rec.dueDate ? ' · Due '+rec.dueDate+' · ' : ''}${rec.dueDate ? daysRemainingHtml(rec.dueDate) : ''}</div>
         </div>
         <span class="pill" style="background:${statusColorVar(rec.status)}; flex-shrink:0;"><span class="dot"></span>${rec.status}</span>
@@ -1627,26 +1902,82 @@ function openStatusPreviewModal(statusKey, label, scopedRecords){
     </div>`).join('') : `<div class="empty-state"><div class="ic">▤</div>No records with this status yet.</div>`;
 
   host.innerHTML = `<div class="modal-backdrop"><div class="modal bracket">
-    <div class="modal-header"><h3>${escapeAttr(label)} <span class="muted small">(${list.length.toLocaleString()})</span></h3><button class="icon-btn" id="spClose">✕</button></div>
+    <div class="modal-header">
+      <h3>${escapeAttr(label)} <span class="muted small">(${list.length.toLocaleString()})</span></h3>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <button class="icon-btn" id="spFullTable" title="View full table">⛶</button>
+        <button class="icon-btn" id="spClose">✕</button>
+      </div>
+    </div>
     ${list.length>STATUS_PREVIEW_LIMIT ? `<p class="small muted">Showing the ${STATUS_PREVIEW_LIMIT} most recently updated — refine in Data Sheet or Reports to see the rest.</p>` : ''}
+    <p class="small muted" style="margin-top:-4px; margin-bottom:8px;">Tap a record to open its comment checklist · use ⛶ above to see everything in table form.</p>
     <div>${rowsHtml}</div>
   </div></div>`;
 
   document.getElementById('spClose').onclick = ()=>host.innerHTML='';
+  document.getElementById('spFullTable').onclick = ()=>{ host.innerHTML=''; gotoFullTableFor(statusKey); };
   host.querySelectorAll('[data-stop]').forEach(a=>{ a.onclick = (e)=>e.stopPropagation(); });
   host.querySelectorAll('[data-rec]').forEach(card=>{
     card.onclick = ()=>{
       const rec = App.records.find(r=>r.id===card.dataset.rec); if(!rec) return;
-      host.innerHTML='';
-      if(rec.formId){
-        const form = App.forms.find(f=>f.id===rec.formId);
-        if(form){ goTo('forms'); openFormTable(form); return; }
-      }
-      App.statusFilter=''; App.searchTerm=''; document.getElementById('searchBox').value='';
-      document.getElementById('filterStatus').value='';
-      goTo('sheet');
+      openCommentQuickEditModal(rec);
     };
   });
+}
+
+/* Navigate to the underlying table behind a dashboard popup — the
+   scoped form's table if the dashboard's form filter is set to one
+   specific form, otherwise the main Data Sheet (pre-filtered to the
+   status that was tapped, when there is one). */
+function gotoFullTableFor(statusKey){
+  const sel = App.dashFormFilter || '';
+  if(sel && sel!=='__sheet__'){
+    const form = App.forms.find(f=>f.id===sel);
+    if(form){ goTo('forms'); openFormTable(form); return; }
+  }
+  App.statusFilter = statusKey || '';
+  App.searchTerm=''; document.getElementById('searchBox').value='';
+  document.getElementById('filterStatus').value = statusKey || '';
+  goTo('sheet');
+}
+
+/* Quick edit: just the comment / checklist for one record, reachable
+   by tapping a record inside a dashboard popup without leaving it
+   for the full Data Sheet or Form table. */
+function openCommentQuickEditModal(rec){
+  const host = document.getElementById('modalHost');
+  host.innerHTML = `<div class="modal-backdrop"><div class="modal bracket">
+    <div class="modal-header"><h3>💬 Comment</h3><button class="icon-btn" id="cqClose">✕</button></div>
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px;">
+      <div class="small muted" style="min-width:0;">${recordSummaryLine(rec)}</div>
+      <span class="pill" style="background:${statusColorVar(rec.status)}; flex-shrink:0;"><span class="dot"></span>${rec.status}</span>
+    </div>
+    <div class="cmt-toolbar">
+      <button type="button" id="cqCmtCheck">☑ Checkbox</button>
+      <button type="button" id="cqCmtBullet">• Bullet</button>
+    </div>
+    <div id="cqCommentBox">
+      <textarea id="cqComment" class="field-input" rows="5" style="width:100%; resize:vertical; font-family:inherit;" placeholder="Add a comment…">${escapeHtml(rec.remarks||'')}</textarea>
+    </div>
+    <div class="cmt-preview" id="cqCommentPreview"></div>
+    <button type="button" class="cmt-toggle-link" id="cqCommentToggle">✎ Edit as plain text</button>
+    <div class="btn-row" style="justify-content:flex-end; margin-top:10px;">
+      <button class="btn" id="cqCancel">Cancel</button>
+      <button class="btn btn-primary" id="cqSave">✓ Save comment</button>
+    </div>
+  </div></div>`;
+
+  initCommentEditor('cqComment', 'cqCommentPreview');
+  document.getElementById('cqCmtCheck').onclick = ()=>insertCommentLine('cqComment', 'cqCommentPreview', 'check');
+  document.getElementById('cqCmtBullet').onclick = ()=>insertCommentLine('cqComment', 'cqCommentPreview', 'bullet');
+  document.getElementById('cqCommentToggle').onclick = ()=>{ commentForceText['cqComment']=true; updateCommentBoxDisplay('cqComment','cqCommentPreview'); document.getElementById('cqComment').focus(); };
+  document.getElementById('cqClose').onclick = ()=>host.innerHTML='';
+  document.getElementById('cqCancel').onclick = ()=>host.innerHTML='';
+  document.getElementById('cqSave').onclick = async ()=>{
+    await updateField(rec, 'remarks', document.getElementById('cqComment').value.trim());
+    toast('Comment updated');
+    host.innerHTML='';
+  };
 }
 
 /* ---------------------------------------------------------------
@@ -1771,21 +2102,21 @@ function toCSV(header, body){
 }
 document.getElementById('btnExpCSV').onclick = ()=>{
   const {header, body} = recordsToRows(App.filtered.length ? App.filtered : App.records.filter(r=>!r.formId));
-  downloadBlob(toCSV(header,body), `scansheet-data-${fmtDate(new Date())}.csv`, 'text/csv');
+  downloadBlob(toCSV(header,body), `process-tracker-data-${fmtDate(new Date())}.csv`, 'text/csv');
 };
 document.getElementById('btnExpXLSX').onclick = ()=>{
   const {header, body} = recordsToRows(App.filtered.length ? App.filtered : App.records.filter(r=>!r.formId));
   const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Data');
-  XLSX.writeFile(wb, `scansheet-data-${fmtDate(new Date())}.xlsx`);
+  XLSX.writeFile(wb, `process-tracker-data-${fmtDate(new Date())}.xlsx`);
 };
 document.getElementById('btnExpPDF').onclick = ()=>{
   const {header, body} = recordsToRows(App.filtered.length ? App.filtered : App.records.filter(r=>!r.formId));
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({orientation:'landscape'});
-  doc.setFontSize(14); doc.text('ScanSheet — Data Export', 14, 14);
+  doc.setFontSize(14); doc.text('Process Tracker — Data Export', 14, 14);
   doc.autoTable({ head:[header], body, startY:20, styles:{fontSize:7} });
-  doc.save(`scansheet-data-${fmtDate(new Date())}.pdf`);
+  doc.save(`process-tracker-data-${fmtDate(new Date())}.pdf`);
 };
 
 /* Report table exports use the global column schema, so custom-form
@@ -1795,24 +2126,24 @@ document.getElementById('btnExpPDF').onclick = ()=>{
 function reportExportRows(){ return recordsToRows(repFilteredCache.filter(r=>!r.formId)); }
 document.getElementById('btnRepCSV').onclick = ()=>{
   const {header, body} = reportExportRows();
-  downloadBlob(toCSV(header,body), `scansheet-report-${fmtDate(new Date())}.csv`, 'text/csv');
+  downloadBlob(toCSV(header,body), `process-tracker-report-${fmtDate(new Date())}.csv`, 'text/csv');
 };
 document.getElementById('btnRepXLSX').onclick = ()=>{
   const {header, body} = reportExportRows();
   const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Report');
-  XLSX.writeFile(wb, `scansheet-report-${fmtDate(new Date())}.xlsx`);
+  XLSX.writeFile(wb, `process-tracker-report-${fmtDate(new Date())}.xlsx`);
 };
 document.getElementById('btnRepPDF').onclick = ()=>{
   const {header, body} = reportExportRows();
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({orientation:'landscape'});
-  doc.setFontSize(14); doc.text('ScanSheet — Report', 14, 14);
+  doc.setFontSize(14); doc.text('Process Tracker — Report', 14, 14);
   const counts={}; getStatusNames().forEach(s=>counts[s]=0); repFilteredCache.forEach(r=>{if(counts[r.status]!==undefined)counts[r.status]++;});
   doc.setFontSize(9);
   doc.text(`Total: ${repFilteredCache.length}  |  `+getStatusNames().map(s=>`${s}: ${counts[s]}`).join('  '), 14, 21);
   doc.autoTable({ head:[header], body, startY:26, styles:{fontSize:7} });
-  doc.save(`scansheet-report-${fmtDate(new Date())}.pdf`);
+  doc.save(`process-tracker-report-${fmtDate(new Date())}.pdf`);
 };
 document.getElementById('btnRepPrint').onclick = ()=>{ window.print(); };
 
@@ -1828,8 +2159,11 @@ document.getElementById('btnRepPrint').onclick = ()=>{ window.print(); };
 const FIELD_TYPES = [
   {id:'number', label:'Number'},
   {id:'short',  label:'Short Text'},
-  {id:'long',   label:'Long Text'},
-  {id:'dropdown', label:'Dropdown'}
+  {id:'long',   label:'Plain Text Box'},
+  {id:'dropdown', label:'Dropdown'},
+  {id:'checklist', label:'Checkbox List'},
+  {id:'bulletlist', label:'Bullet List'},
+  {id:'numberedlist', label:'Numbered List'}
 ];
 let builderDraft = null;   // {id, name, fields:[{id,label,type,options,required}]}
 let activeForm = null;     // form currently open in the table view
@@ -1936,7 +2270,7 @@ function openFormBuilderModal(existingForm){
 function renderBuilderFields(){
   const list = document.getElementById('fbFieldsList');
   if(!builderDraft.fields.length){
-    list.innerHTML = `<p class="small muted">No fields yet — add Number, Short Text, Long Text or Dropdown below.</p>`;
+    list.innerHTML = `<p class="small muted">No fields yet — add a field type below (Number, Text, Dropdown, or a Checkbox/Bullet/Numbered list).</p>`;
     return;
   }
   list.innerHTML='';
@@ -1999,6 +2333,19 @@ function openFillFormModal(form){
       return `<div class="field"><label>${escapeAttr(f.label)}${f.required?' *':''}</label>
         <select class="field-input" data-field-id="${f.id}"><option value="">— select —</option>${opts.map(o=>`<option>${escapeAttr(o)}</option>`).join('')}</select></div>`;
     }
+    if(f.type==='checklist' || f.type==='bulletlist'){
+      const kind = f.type==='checklist' ? 'check' : 'bullet';
+      return `<div class="field"><label>${escapeAttr(f.label)}${f.required?' *':''}</label>
+        <div class="cmt-toolbar"><button type="button" class="cmt-list-add" data-list-field="${f.id}" data-list-kind="${kind}">${kind==='check'?'☑':'•'} Add item</button></div>
+        <textarea id="field_${f.id}" class="field-input" data-field-id="${f.id}" style="display:none;"></textarea>
+        <div class="cmt-preview" id="field_${f.id}_preview"></div></div>`;
+    }
+    if(f.type==='numberedlist'){
+      return `<div class="field"><label>${escapeAttr(f.label)}${f.required?' *':''}</label>
+        <div class="cmt-toolbar"><button type="button" class="cmt-list-add" data-numlist-field="${f.id}">#. Add item</button></div>
+        <textarea id="field_${f.id}" class="field-input" data-field-id="${f.id}" style="display:none;"></textarea>
+        <div class="cmt-preview" id="field_${f.id}_preview"></div></div>`;
+    }
     return '';
   }).join('');
 
@@ -2009,7 +2356,15 @@ function openFillFormModal(form){
 
     <div class="field"><label>Status</label><div class="btn-row" id="ffStatusRow"></div></div>
     <div class="field"><label>Comment</label>
-      <textarea id="ffComment" class="field-input" rows="3" style="width:100%; resize:vertical; font-family:inherit;" placeholder="Add a comment…"></textarea>
+      <div class="cmt-toolbar">
+        <button type="button" id="ffCmtCheck">☑ Checkbox</button>
+        <button type="button" id="ffCmtBullet">• Bullet</button>
+      </div>
+      <div id="ffCommentBox">
+        <textarea id="ffComment" class="field-input" rows="3" style="width:100%; resize:vertical; font-family:inherit;" placeholder="Add a comment…"></textarea>
+      </div>
+      <div class="cmt-preview" id="ffCommentPreview"></div>
+      <button type="button" class="cmt-toggle-link" id="ffCommentToggle">✎ Edit as plain text</button>
     </div>
     <div class="field"><label>Due Date <span class="muted" style="text-transform:none; font-weight:400;">(optional)</span></label>
       <input type="date" id="ffDueDate" class="field-input">
@@ -2021,7 +2376,24 @@ function openFillFormModal(form){
     </div>
   </div></div>`;
 
+  form.fields.forEach(f=>{
+    if(f.type==='checklist' || f.type==='bulletlist') initCommentEditor('field_'+f.id, 'field_'+f.id+'_preview');
+    if(f.type==='numberedlist') renderNumberedPreview('field_'+f.id, 'field_'+f.id+'_preview');
+  });
+  host.querySelectorAll('.cmt-list-add[data-list-field]').forEach(btn=>{
+    const taId = 'field_'+btn.dataset.listField, prevId = taId+'_preview', kind = btn.dataset.listKind;
+    btn.onclick = ()=>insertCommentLine(taId, prevId, kind);
+  });
+  host.querySelectorAll('.cmt-list-add[data-numlist-field]').forEach(btn=>{
+    const taId = 'field_'+btn.dataset.numlistField, prevId = taId+'_preview';
+    btn.onclick = ()=>insertNumberedItem(taId, prevId);
+  });
+
   renderFillStatusButtons();
+  initCommentEditor('ffComment', 'ffCommentPreview');
+  document.getElementById('ffCmtCheck').onclick = ()=>insertCommentLine('ffComment', 'ffCommentPreview', 'check');
+  document.getElementById('ffCmtBullet').onclick = ()=>insertCommentLine('ffComment', 'ffCommentPreview', 'bullet');
+  document.getElementById('ffCommentToggle').onclick = ()=>{ commentForceText['ffComment']=true; updateCommentBoxDisplay('ffComment','ffCommentPreview'); document.getElementById('ffComment').focus(); };
   document.getElementById('ffClose').onclick = ()=>host.innerHTML='';
   document.getElementById('ffSave').onclick = ()=>submitFillForm(form, false);
   document.getElementById('ffSaveAnother').onclick = ()=>submitFillForm(form, true);
@@ -2214,7 +2586,7 @@ document.getElementById('btnFormExpPDF').onclick = ()=>{
   const {header, body} = formRecordsToRows(activeForm);
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({orientation:'landscape'});
-  doc.setFontSize(14); doc.text(`ScanSheet — ${activeForm.name}`, 14, 14);
+  doc.setFontSize(14); doc.text(`Process Tracker — ${activeForm.name}`, 14, 14);
   doc.autoTable({ head:[header], body, startY:20, styles:{fontSize:7} });
   doc.save(`${activeForm.name.replace(/\s+/g,'-').toLowerCase()}-${fmtDate(new Date())}.pdf`);
 };
@@ -2277,7 +2649,7 @@ async function gsCall(action, extra){
     if(/script function not found/i.test(raw)){
       reason = `Apps Script says "${(raw.match(/Script function not found:?\s*\S*/i)||[])[0]||'function not found'}" — the deployed URL is running an older version of Code.gs that predates doPost(). Fix: Deploy → Manage deployments → edit your deployment → Version: "New version" → Deploy. Editing the code alone does not update the live /exec URL.`;
     } else if(/userhtmlframe|<iframe/i.test(raw)){
-      reason = 'This is Apps Script\'s HTML-page wrapper, meaning the request landed on doGet() (which serves your console\'s page) instead of doPost(). This usually means the URL in Google Sync is a "/dev" test-deployment URL rather than the real "/exec" URL — open Deploy → Manage deployments, find the row for your actual Web app deployment, and copy the URL that ends in "/exec" (not "Test deployments", which gives a /dev URL). If ScanSheet is running inside the console and auto-filled this URL, check what the console\'s own address bar shows when you open it normally — it needs to be the /exec URL too.';
+      reason = 'This is Apps Script\'s HTML-page wrapper, meaning the request landed on doGet() (which serves your console\'s page) instead of doPost(). This usually means the URL in Google Sync is a "/dev" test-deployment URL rather than the real "/exec" URL — open Deploy → Manage deployments, find the row for your actual Web app deployment, and copy the URL that ends in "/exec" (not "Test deployments", which gives a /dev URL). If Process Tracker is running inside the console, check what the console\'s own address bar shows when you open it normally — it needs to be the /exec URL too.';
     } else if(/accounts\.google\.com|sign in|authorization required/i.test(raw)){
       reason = 'This looks like a Google sign-in / authorization page, not your script\'s output. Fix: in Deploy → Manage deployments, confirm "Execute as: Me" and "Who has access: Anyone", then redeploy as a new version.';
     } else if(res.status>=400){
