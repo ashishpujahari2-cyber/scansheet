@@ -161,6 +161,11 @@ a{color:var(--accent);}
   color:var(--text); font-size:16px;
 }
 .icon-btn:active{transform:scale(.92);}
+@media (max-width:380px){
+  .topbar-actions{gap:5px;}
+  .icon-btn{width:32px; height:32px; font-size:14px;}
+  .brand{font-size:0.92rem;}
+}
 
 /* ---------------------------------------------------------------
    Side drawer navigation (replaces the old bottom tab bar so more
@@ -371,7 +376,8 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
     <button class="icon-btn" id="btnUndo" title="Undo">↺</button>
     <button class="icon-btn" id="btnRedo" title="Redo">↻</button>
     <button class="icon-btn" id="btnGsStatus" title="Google Sync status">☁️</button>
-    <button class="icon-btn" id="btnThemeToggle" title="Toggle theme">🌙</button>
+    <button class="icon-btn" id="btnTopSync" title="Sync now (push to Google Sheets)">⬆</button>
+    <button class="icon-btn" id="btnTopPull" title="Pull from Google Sheets">⬇</button>
   </div>
 </header>
 
@@ -428,9 +434,11 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
     <div class="section-title"><h2>Data Sheet</h2><span class="muted small" id="sheetCount"></span></div>
 
     <div class="toolbar">
+      <select id="sheetFormSwitch" style="max-width:220px;"></select>
       <input type="text" id="searchBox" placeholder="🔎 Search all columns, status, remarks, tags…">
       <select id="filterStatus"><option value="">All statuses</option></select>
       <button class="btn btn-sm btn-primary" id="btnNewEntrySheet">📝 New entry (form)</button>
+      <button class="btn btn-sm btn-primary hidden" id="btnFillFormSheet">📝 Fill form</button>
       <button class="btn btn-sm" id="btnAddRow">+ Row</button>
       <button class="btn btn-sm" id="btnAddCol">+ Column</button>
       <button class="btn btn-sm" id="btnBulkEdit">Bulk edit</button>
@@ -500,6 +508,7 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
         <button class="btn btn-sm" id="btnBackToForms">← All forms</button>
       </div>
       <div class="toolbar">
+        <select id="formTableSwitch" style="max-width:220px;"></select>
         <input type="text" id="formSearchBox" placeholder="🔎 Search this form's entries…">
         <button class="btn btn-sm btn-primary" id="btnFillFormFromTable">📝 Fill form</button>
       </div>
@@ -758,7 +767,7 @@ const App = {
   selection: new Set(),
   filtered: [],           // current filtered+sorted view (array of record refs) for Data Sheet
   sortCol: null, sortDir: 1,
-  searchTerm:'', statusFilter:'', dashFormFilter:'',
+  searchTerm:'', statusFilter:'', dashFormFilter:'', sheetActiveFormId:'',
   undoStack: [], redoStack: [],
   saveTimer: null, dirty:false,
 };
@@ -886,13 +895,8 @@ document.getElementById('drawerBackdrop').onclick = closeDrawer;
 function applyTheme(){
   document.body.dataset.theme = App.settings.theme;
   document.documentElement.style.setProperty('--font-scale', App.settings.fontScale);
-  document.getElementById('btnThemeToggle').textContent = App.settings.theme==='dark' ? '☀️' : '🌙';
   document.getElementById('toggleDark').checked = App.settings.theme==='dark';
 }
-document.getElementById('btnThemeToggle').onclick = ()=>{
-  App.settings.theme = App.settings.theme==='dark' ? 'light':'dark';
-  applyTheme(); scheduleSave();
-};
 document.getElementById('toggleDark').onchange = (e)=>{
   App.settings.theme = e.target.checked ? 'dark':'light';
   applyTheme(); scheduleSave();
@@ -1536,9 +1540,49 @@ function attachSwipe(el, rec){
   }, {passive:true});
 }
 
+/* Populates the "switch table" dropdown shared by the Data Sheet and
+   Form Table toolbars — "📋 Data Sheet" plus one entry per Form —
+   so either page can jump straight to any other one in a single tap. */
+function renderTableSwitchOptions(selectId, currentValue){
+  const sel = document.getElementById(selectId);
+  if(!sel) return;
+  const opts = [`<option value="">📋 Data Sheet</option>`]
+    .concat(App.forms.map(f=>`<option value="${f.id}">🧩 ${escapeAttr(f.name)}</option>`));
+  sel.innerHTML = opts.join('');
+  sel.value = currentValue;
+}
+function switchToTable(value){
+  if(!value){ App.sheetActiveFormId=''; goTo('sheet'); return; }
+  const form = App.forms.find(f=>f.id===value);
+  if(form){ goTo('forms'); openFormTable(form); }
+}
+
 /* --- virtualization core --- */
 let sheetScrollEl, sheetInnerHeightEl, sheetVisibleWrap, sheetHeaderEl;
+let sheetFormSortCol = null, sheetFormSortDir = 1;
+function updateSheetToolbarMode(isForm){
+  document.getElementById('btnNewEntrySheet').classList.toggle('hidden', isForm);
+  document.getElementById('btnFillFormSheet').classList.toggle('hidden', !isForm);
+  document.getElementById('btnAddRow').classList.toggle('hidden', isForm);
+  document.getElementById('btnAddCol').classList.toggle('hidden', isForm);
+}
 function renderSheet(){
+  renderTableSwitchOptions('sheetFormSwitch', App.sheetActiveFormId||'');
+  const form = App.sheetActiveFormId ? App.forms.find(f=>f.id===App.sheetActiveFormId) : null;
+  updateSheetToolbarMode(!!form);
+
+  if(form){
+    document.getElementById('btnFillFormSheet').onclick = ()=>openFillFormModal(form, 'sheet');
+    const opts = {searchTerm:App.searchTerm, statusFilter:App.statusFilter, sortCol:sheetFormSortCol, sortDir:sheetFormSortDir};
+    const count = renderFormGridInto('mainGridScroll', form, opts, (colId)=>{
+      if(sheetFormSortCol===colId) sheetFormSortDir*=-1; else { sheetFormSortCol=colId; sheetFormSortDir=1; }
+      renderSheet();
+    });
+    const total = App.records.filter(r=>r.formId===form.id).length;
+    document.getElementById('sheetCount').textContent = `${count.toLocaleString()} / ${total.toLocaleString()} entries`;
+    return;
+  }
+
   recomputeFiltered();
   document.getElementById('sheetCount').textContent = `${App.filtered.length.toLocaleString()} / ${App.records.length.toLocaleString()} records`;
 
@@ -1584,6 +1628,14 @@ function renderSheetIfActive(){ if(document.getElementById('page-sheet').classLi
 
 document.getElementById('searchBox').oninput = (e)=>{ App.searchTerm=e.target.value; renderSheet(); };
 document.getElementById('filterStatus').onchange = (e)=>{ App.statusFilter=e.target.value; renderSheet(); };
+document.getElementById('sheetFormSwitch').onchange = (e)=>{
+  App.sheetActiveFormId = e.target.value;
+  App.searchTerm=''; document.getElementById('searchBox').value='';
+  App.statusFilter=''; document.getElementById('filterStatus').value='';
+  sheetFormSortCol = null;
+  App.selection.clear();
+  renderSheet();
+};
 document.getElementById('btnAddRow').onclick = async ()=>{
   const rec = newRecord({}); App.columns.forEach(c=>rec.cells[c.id]='');
   App.records.push(rec); pushHistory({type:'add', before:[], after:[clone(rec)]});
@@ -2100,23 +2152,31 @@ function toCSV(header, body){
   const esc = v => `"${String(v).replace(/"/g,'""')}"`;
   return [header.map(esc).join(','), ...body.map(row=>row.map(esc).join(','))].join('\r\n');
 }
+/* Data Sheet page export buttons double as the current Form's export
+   whenever the "switch table" dropdown is set to a Form — same three
+   buttons, whichever table is currently showing. */
+function currentSheetExportRows(){
+  const form = App.sheetActiveFormId ? App.forms.find(f=>f.id===App.sheetActiveFormId) : null;
+  if(form) return { rows: formRecordsToRows(form), namePart: form.name.replace(/\s+/g,'-').toLowerCase(), title: `Process Tracker — ${form.name}` };
+  return { rows: recordsToRows(App.filtered.length ? App.filtered : App.records.filter(r=>!r.formId)), namePart: 'process-tracker-data', title: 'Process Tracker — Data Export' };
+}
 document.getElementById('btnExpCSV').onclick = ()=>{
-  const {header, body} = recordsToRows(App.filtered.length ? App.filtered : App.records.filter(r=>!r.formId));
-  downloadBlob(toCSV(header,body), `process-tracker-data-${fmtDate(new Date())}.csv`, 'text/csv');
+  const {rows:{header, body}, namePart} = currentSheetExportRows();
+  downloadBlob(toCSV(header,body), `${namePart}-${fmtDate(new Date())}.csv`, 'text/csv');
 };
 document.getElementById('btnExpXLSX').onclick = ()=>{
-  const {header, body} = recordsToRows(App.filtered.length ? App.filtered : App.records.filter(r=>!r.formId));
+  const {rows:{header, body}, namePart} = currentSheetExportRows();
   const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Data');
-  XLSX.writeFile(wb, `process-tracker-data-${fmtDate(new Date())}.xlsx`);
+  XLSX.writeFile(wb, `${namePart}-${fmtDate(new Date())}.xlsx`);
 };
 document.getElementById('btnExpPDF').onclick = ()=>{
-  const {header, body} = recordsToRows(App.filtered.length ? App.filtered : App.records.filter(r=>!r.formId));
+  const {rows:{header, body}, namePart, title} = currentSheetExportRows();
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({orientation:'landscape'});
-  doc.setFontSize(14); doc.text('Process Tracker — Data Export', 14, 14);
+  doc.setFontSize(14); doc.text(title, 14, 14);
   doc.autoTable({ head:[header], body, startY:20, styles:{fontSize:7} });
-  doc.save(`process-tracker-data-${fmtDate(new Date())}.pdf`);
+  doc.save(`${namePart}-${fmtDate(new Date())}.pdf`);
 };
 
 /* Report table exports use the global column schema, so custom-form
@@ -2203,7 +2263,7 @@ function renderFormsList(){
         <button class="btn btn-sm" data-act="edit">✎ Edit</button>
         <button class="btn btn-sm btn-danger" data-act="delete">🗑 Delete</button>
       </div>`;
-    card.querySelector('[data-act="fill"]').onclick = ()=>openFillFormModal(form);
+    card.querySelector('[data-act="fill"]').onclick = ()=>openFillFormModal(form, 'forms');
     card.querySelector('[data-act="table"]').onclick = ()=>openFormTable(form);
     card.querySelector('[data-act="edit"]').onclick = ()=>openFormBuilderModal(form);
     card.querySelector('[data-act="delete"]').onclick = ()=>deleteForm(form);
@@ -2319,8 +2379,10 @@ async function saveBuilderForm(){
 
 /* ---------- Fill form modal (creates a record) ---------- */
 let fillFormStatus = App.settings.defaultStatus;
-function openFillFormModal(form){
+let fillFormReturnTo = 'forms'; // 'forms' | 'sheet' — where to land after saving without "add another"
+function openFillFormModal(form, returnTo){
   fillFormStatus = App.settings.defaultStatus;
+  if(returnTo) fillFormReturnTo = returnTo;
   const host = document.getElementById('modalHost');
   const now = new Date();
 
@@ -2433,12 +2495,17 @@ async function submitFillForm(form, addAnother){
   renderDashboard();
 
   if(addAnother){ openFillFormModal(form); }
-  else { document.getElementById('modalHost').innerHTML=''; openFormTable(form); }
+  else {
+    document.getElementById('modalHost').innerHTML='';
+    if(fillFormReturnTo==='sheet'){ App.sheetActiveFormId = form.id; goTo('sheet'); }
+    else { openFormTable(form); }
+  }
 }
 
 /* ---------- Per-form table view (own grid, own export) ---------- */
 document.getElementById('formSearchBox').oninput = (e)=>{ formSearchTerm = e.target.value; renderFormGrid(); };
-document.getElementById('btnFillFormFromTable').onclick = ()=>{ if(activeForm) openFillFormModal(activeForm); };
+document.getElementById('formTableSwitch').onchange = (e)=>{ switchToTable(e.target.value); };
+document.getElementById('btnFillFormFromTable').onclick = ()=>{ if(activeForm) openFillFormModal(activeForm, 'forms'); };
 document.getElementById('btnFormDelete').onclick = ()=>{ if(activeForm) deleteForm(activeForm); };
 
 function openFormTable(form){
@@ -2447,6 +2514,7 @@ function openFormTable(form){
   document.getElementById('formsListView').classList.add('hidden');
   document.getElementById('formTableView').classList.remove('hidden');
   document.getElementById('formTableTitle').textContent = form.name;
+  renderTableSwitchOptions('formTableSwitch', form.id);
   renderFormGrid();
 }
 
@@ -2461,22 +2529,31 @@ function formGridColumns(form){
     {id:'daysRemaining', label:'Days Remaining', w:130, kind:'daysremaining', sortable:true},
   ];
 }
-function formFilteredRecords(form){
-  const term = formSearchTerm.trim().toLowerCase();
+/* opts: {searchTerm, statusFilter, sortCol, sortDir} — shared by both
+   the standalone Forms-page table and the Data Sheet's embedded form
+   view, so switching between them (via the "switch table" dropdown)
+   doesn't need two parallel filtering implementations. */
+function computeFormFilteredRecords(form, opts){
+  opts = opts || {};
+  const term = (opts.searchTerm||'').trim().toLowerCase();
   let recs = App.records.filter(r=>r.formId===form.id);
+  if(opts.statusFilter) recs = recs.filter(r=>r.status===opts.statusFilter);
   if(term){
     recs = recs.filter(r=>{
       const hay = [...Object.values(r.cells||{}), r.status, r.remarks, r.date].join(' ').toLowerCase();
       return hay.includes(term);
     });
   }
-  if(formGridSortCol){
+  if(opts.sortCol){
     recs = [...recs].sort((a,b)=>{
-      const va = getSortValue(a, formGridSortCol), vb = getSortValue(b, formGridSortCol);
-      if(va<vb) return -1*formGridSortDir; if(va>vb) return 1*formGridSortDir; return 0;
+      const va = getSortValue(a, opts.sortCol), vb = getSortValue(b, opts.sortCol);
+      if(va<vb) return -1*opts.sortDir; if(va>vb) return 1*opts.sortDir; return 0;
     });
   }
   return recs;
+}
+function formFilteredRecords(form){
+  return computeFormFilteredRecords(form, {searchTerm:formSearchTerm, sortCol:formGridSortCol, sortDir:formGridSortDir});
 }
 function buildFormRowEl(rec, cols){
   const row = document.createElement('div'); row.className='grid-row'+(App.selection.has(rec.id)?' selected':'');
@@ -2512,14 +2589,15 @@ function buildFormRowEl(rec, cols){
   });
   return row;
 }
-function renderFormGrid(){
-  if(!activeForm) return;
-  const form = activeForm;
-  const filtered = formFilteredRecords(form);
+/* Draws a Form's grid into any container — reused by the standalone
+   Forms-page table and by the Data Sheet page when its "switch
+   table" dropdown is set to a Form instead of "Data Sheet". */
+function renderFormGridInto(containerId, form, opts, onHeaderClick){
+  const filtered = computeFormFilteredRecords(form, opts);
   const cols = formGridColumns(form);
   const totalW = cols.reduce((s,c)=>s+c.w,0);
 
-  const container = document.getElementById('formGridScroll');
+  const container = document.getElementById(containerId);
   container.innerHTML='';
   const wrapper = document.createElement('div'); wrapper.style.minWidth = totalW+'px';
 
@@ -2527,8 +2605,8 @@ function renderFormGrid(){
   cols.forEach(c=>{
     const d = document.createElement('div'); d.className='gcell'+(c.sortable?' sortable':''); d.style.width=c.w+'px'; d.textContent=c.label;
     if(c.sortable){
-      d.onclick=()=>{ if(formGridSortCol===c.id) formGridSortDir*=-1; else { formGridSortCol=c.id; formGridSortDir=1; } renderFormGrid(); };
-      if(formGridSortCol===c.id) d.textContent += formGridSortDir===1?' ▲':' ▼';
+      d.onclick=()=>onHeaderClick(c.id);
+      if(opts.sortCol===c.id) d.textContent += opts.sortDir===1?' ▲':' ▼';
     }
     head.appendChild(d);
   });
@@ -2544,7 +2622,7 @@ function renderFormGrid(){
   if(!filtered.length){
     visWrap.innerHTML = `<div class="empty-state"><div class="ic">📝</div>No entries yet — tap "Fill form" to add the first one.</div>`;
     spacer.style.height='auto';
-    return;
+    return filtered.length;
   }
   function draw(){
     const scrollTop = container.scrollTop, viewH = container.clientHeight||400;
@@ -2558,6 +2636,14 @@ function renderFormGrid(){
   }
   container.onscroll = ()=>window.requestAnimationFrame(draw);
   draw();
+  return filtered.length;
+}
+function renderFormGrid(){
+  if(!activeForm) return;
+  renderFormGridInto('formGridScroll', activeForm,
+    {searchTerm:formSearchTerm, sortCol:formGridSortCol, sortDir:formGridSortDir},
+    (colId)=>{ if(formGridSortCol===colId) formGridSortDir*=-1; else { formGridSortCol=colId; formGridSortDir=1; } renderFormGrid(); }
+  );
 }
 
 /* ---------- Per-form export (Excel / CSV / PDF) ---------- */
@@ -2759,6 +2845,8 @@ document.getElementById('btnGsTest').onclick = gsTestConnection;
 document.getElementById('btnGsPush').onclick = gsPush;
 document.getElementById('btnGsPull').onclick = gsPull;
 document.getElementById('btnGsStatus').onclick = ()=>goTo('settings');
+document.getElementById('btnTopSync').onclick = gsPush;
+document.getElementById('btnTopPull').onclick = gsPull;
 
 /* ---------------------------------------------------------------
    16. REFRESH / INIT
