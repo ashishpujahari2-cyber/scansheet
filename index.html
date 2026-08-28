@@ -337,6 +337,16 @@ a{color:var(--accent);}
   font-size:12px; color:var(--accent); text-decoration:underline; cursor:pointer;
 }
 
+/* ---------------------------------------------------------------
+   Login / connect screen
+---------------------------------------------------------------- */
+.login-screen{
+  position:fixed; inset:0; z-index:300; background:var(--bg);
+  display:flex; align-items:center; justify-content:center; padding:24px;
+  overflow-y:auto;
+}
+.login-card{ width:100%; max-width:380px; }
+
 /* Toast */
 #toast-host{position:fixed; top:calc(var(--topbar-h) + 12px + env(safe-area-inset-top)); left:0; right:0; display:flex; flex-direction:column; align-items:center; gap:8px; z-index:200; pointer-events:none;}
 .toast{background:var(--surface-strong); border:1px solid var(--border); backdrop-filter:blur(14px); padding:10px 16px; border-radius:10px; font-size:.85rem; box-shadow:var(--shadow); animation:toastIn .2s ease;}
@@ -366,6 +376,40 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
 
 <div id="toast-host"></div>
 
+<!-- =================== LOGIN / CONNECT SCREEN =================== -->
+<div id="loginScreen" class="login-screen hidden">
+  <div class="login-card">
+    <div class="brand" style="justify-content:center; margin-bottom:20px; font-size:1.25rem;"><span class="mark">⌐¬</span> Process Tracker</div>
+
+    <div id="loginConnectStep">
+      <h3 class="small muted" style="margin-bottom:8px;">Connect to Google Sheets</h3>
+      <p class="small muted" style="margin-bottom:12px;">Everything in this app is stored in a Google Sheet you control. Paste your Apps Script Web App URL to continue.</p>
+      <div class="field"><label>Apps Script Web App URL</label>
+        <input type="url" id="loginGsUrl" class="field-input" placeholder="https://script.google.com/macros/s/…/exec">
+      </div>
+      <div class="field"><label>Shared token <span class="muted" style="text-transform:none; font-weight:400;">(optional)</span></label>
+        <input type="password" id="loginGsToken" class="field-input" placeholder="only if your script sets SYNC_TOKEN">
+      </div>
+      <p class="small" id="loginConnectError" style="color:var(--danger); display:none; margin-bottom:8px;"></p>
+      <button class="btn btn-primary" style="width:100%;" id="btnLoginConnect">Continue →</button>
+    </div>
+
+    <div id="loginAuthStep" class="hidden">
+      <h3 class="small muted" style="margin-bottom:8px;">Log in</h3>
+      <p class="small muted" style="margin-bottom:12px;">New sheet with no accounts yet? Just enter a username and password below — it becomes the founding admin account automatically.</p>
+      <div class="field"><label>Username</label>
+        <input type="text" id="loginUsername" class="field-input" autocomplete="username">
+      </div>
+      <div class="field"><label>Password</label>
+        <input type="password" id="loginPassword" class="field-input" autocomplete="current-password">
+      </div>
+      <p class="small" id="loginAuthError" style="color:var(--danger); display:none; margin-bottom:8px;"></p>
+      <button class="btn btn-primary" style="width:100%;" id="btnLoginSubmit">Log in</button>
+      <button class="btn" style="width:100%; margin-top:8px;" id="btnLoginChangeSheet">← Use a different Sheet</button>
+    </div>
+  </div>
+</div>
+
 <!-- =================== TOP BAR =================== -->
 <header class="topbar">
   <div style="display:flex; align-items:center; gap:10px;">
@@ -394,8 +438,9 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
     <button class="drawer-btn" data-nav="reports"><span class="ic">◔</span>Reports</button>
     <button class="drawer-btn" data-nav="forms"><span class="ic">🧩</span>Forms</button>
     <button class="drawer-btn" data-nav="settings"><span class="ic">⚙</span>Settings</button>
+    <button class="drawer-btn hidden" data-nav="admin" id="navAdminBtn"><span class="ic">🛡</span>Admin</button>
   </div>
-  <div class="drawer-footer small muted">Process Tracker · works fully offline</div>
+  <div class="drawer-footer small muted" id="drawerFooter">Process Tracker · works fully offline</div>
 </nav>
 
 <!-- =================== PAGES =================== -->
@@ -561,7 +606,7 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
 
     <div class="card" style="margin-bottom:var(--gap);">
       <h3 class="small muted" style="margin-bottom:2px;">Google Sheets Sync</h3>
-      <p class="small muted" style="margin-bottom:10px;">Connects to a Google Apps Script Web App you deploy — it writes every record, including all your custom Forms and their entries, into a Google Sheet (one tab per form). See the included setup guide for the exact script.</p>
+      <p class="small muted" style="margin-bottom:10px;">Connects to a Google Apps Script Web App you deploy — it writes every record, including all your custom Forms and their entries, into a Google Sheet (one tab per form). See the included setup guide for the exact script. Once connected, the app requires logging in — manage accounts and view the activity log from <strong>Admin</strong> (admin accounts only).</p>
       <p class="small" id="gsConsoleNote" style="display:none; margin-bottom:10px; color:var(--accent);"></p>
 
       <div class="field"><label>Apps Script Web App URL</label>
@@ -591,6 +636,27 @@ input:checked + .slider-tg::before{transform:translateX(18px);}
         <button class="btn btn-danger" id="btnClearData">🗑 Clear all data</button>
       </div>
       <p class="small muted" style="margin-top:10px;">Storage engine: IndexedDB — data persists on this device between sessions. Google Sync above is optional and separate from this local backup.</p>
+    </div>
+  </section>
+
+  <!-- ---------- ADMIN (Users + Activity Log) ---------- -->
+  <section class="page" id="page-admin">
+    <div class="section-title"><h2>Admin</h2></div>
+
+    <div class="card" style="margin-bottom:var(--gap);">
+      <div class="section-title" style="margin-bottom:8px;"><h3 class="small muted">Users</h3>
+        <button class="btn btn-sm btn-primary" id="btnNewUser">+ New user</button>
+      </div>
+      <p class="small muted" style="margin-bottom:10px;">Only admins can create accounts. Regular users can use the app but can't manage users or view this activity log.</p>
+      <div id="usersList"><p class="small muted">Loading…</p></div>
+    </div>
+
+    <div class="card">
+      <div class="section-title" style="margin-bottom:8px;"><h3 class="small muted">Activity Log</h3>
+        <button class="btn btn-sm" id="btnRefreshLogs">↻ Refresh</button>
+      </div>
+      <p class="small muted" style="margin-bottom:10px;">Every login, logout, record change, and account change — most recent first. Stored in the hidden "_Logs" tab of your Google Sheet.</p>
+      <div id="logsList"><p class="small muted">Loading…</p></div>
     </div>
   </section>
 
@@ -763,6 +829,8 @@ const App = {
     googleSync: { url:'', token:'', autoSync:false, lastSyncedAt:null }
   },
   deletedIds: [],          // record ids removed locally since the last successful push (tombstones for sync)
+  pendingLogs: [],         // local activity entries queued for the next push to the Sheet's _Logs tab
+  session: null,           // {token, username, role} once logged in (standalone mode only — see boot())
   consoleUser: '',         // username, when running as a tool inside Ashish's Console
   selection: new Set(),
   filtered: [],           // current filtered+sorted view (array of record refs) for Data Sheet
@@ -791,10 +859,24 @@ window.addEventListener('beforeunload', flushSave);
    3. UNDO / REDO
    Each action: {type:'update'|'add'|'delete', records:[before...], after:[after...]}
 ---------------------------------------------------------------- */
+/* Queues a local activity entry for the audit trail. Batched and
+   sent up with the next push to the Sheet's _Logs tab — the server
+   re-stamps every entry with the authenticated pusher's own identity
+   (see appendBatchedLogs_ in Code.gs), so this is just local
+   bookkeeping, not the security boundary. */
+function logActivity(action, details){
+  if(!App.session) return; // no attribution possible before login (e.g. console mode)
+  App.pendingLogs.push({ ts:new Date().toISOString(), action, details:String(details||'').slice(0,300) });
+  if(App.pendingLogs.length>500) App.pendingLogs.shift(); // safety cap if sync stays off for a long time
+  DB.setMeta('pendingLogs', App.pendingLogs);
+}
 function pushHistory(action){
   App.undoStack.push(action);
   if(App.undoStack.length>100) App.undoStack.shift();
   App.redoStack.length = 0;
+  const n = (action.after&&action.after.length) || (action.before&&action.before.length) || 0;
+  const verb = action.type==='add' ? 'Added' : action.type==='delete' ? 'Deleted' : 'Updated';
+  logActivity('record_'+action.type, `${verb} ${n} record(s)`);
 }
 async function applyInverse(action, toStack){
   if(action.type==='add'){
@@ -865,6 +947,7 @@ function goTo(pageName){
   if(pageName==='reports') renderReports(true);
   if(pageName==='forms'){ showFormsList(); renderFormsList(); }
   if(pageName==='settings') initGoogleSyncUI();
+  if(pageName==='admin') renderAdminPage();
   closeDrawer();
   window.scrollTo(0,0);
 }
@@ -982,6 +1065,7 @@ function deleteStatusWithConfirm(idx){
     App.settings.statuses.splice(idx,1);
     if(App.settings.defaultStatus===name) App.settings.defaultStatus = App.settings.statuses[0].name;
     scheduleSave(); renderStatusColorSettings(); fillStatusSelects(); refreshAllViews();
+    logActivity('status_deleted', `Status "${name}"`);
     toast('Status deleted');
   });
 }
@@ -994,6 +1078,7 @@ document.getElementById('btnAddStatus').onclick = ()=>{
   const color = palette[App.settings.statuses.length % palette.length];
   App.settings.statuses.push({name:trimmed, color});
   renderStatusColorSettings(); fillStatusSelects(); applyTheme(); scheduleSave();
+  logActivity('status_added', `Status "${trimmed}"`);
   toast(`Status "${trimmed}" added`);
 };
 document.getElementById('btnResetColors').onclick = ()=>{
@@ -1132,15 +1217,18 @@ function ensureColumn(label){
 }
 function addColumn(label){
   const id = 'c'+Date.now().toString(36);
-  App.columns.push({id, label: label || `Column ${App.columns.length+1}`});
+  const finalLabel = label || `Column ${App.columns.length+1}`;
+  App.columns.push({id, label: finalLabel});
   App.records.forEach(r=>{ if(!(id in r.cells)) r.cells[id]=''; });
   scheduleSave(); DB.putRecords(App.records);
+  logActivity('column_added', `Added column "${finalLabel}"`);
 }
 function removeLastColumn(){
   const col = App.columns.pop();
   if(!col) return;
   App.records.forEach(r=>{ delete r.cells[col.id]; });
   scheduleSave(); DB.putRecords(App.records);
+  logActivity('column_removed', `Removed column "${col.label}"`);
 }
 
 /* ---------------------------------------------------------------
@@ -2281,6 +2369,7 @@ async function deleteForm(form){
     markDeleted(ids);
     App.forms = App.forms.filter(f=>f.id!==form.id);
     await saveForms();
+    logActivity('form_deleted', `Form "${form.name}" (${ids.length} entries)`);
     showFormsList(); renderFormsList(); renderDashboard();
     toast('Form deleted');
   });
@@ -2369,8 +2458,10 @@ async function saveBuilderForm(){
   builderDraft.name = name;
 
   const i = App.forms.findIndex(f=>f.id===builderDraft.id);
+  const isNew = i<0;
   if(i>=0) App.forms[i] = builderDraft; else App.forms.push(builderDraft);
   await saveForms();
+  logActivity(isNew?'form_created':'form_edited', `Form "${name}"`);
 
   document.getElementById('modalHost').innerHTML='';
   showFormsList(); renderFormsList(); renderDashboardStatsOnly();
@@ -2716,7 +2807,11 @@ function setGsStatus(status, msg){
 
 async function gsCall(action, extra){
   if(!gsConfigured()) throw new Error('No Web App URL configured');
-  const body = { token: App.settings.googleSync.token || '', action, ...extra };
+  const body = {
+    syncToken: App.settings.googleSync.token || '',      // coarse shared secret (Settings → "Shared token"), optional
+    token: (App.session && App.session.token) || '',      // per-user session token issued at login, required once accounts exist
+    action, ...extra
+  };
   const res = await fetch(App.settings.googleSync.url, {
     method:'POST',
     headers:{ 'Content-Type':'text/plain;charset=utf-8' }, // avoids a CORS preflight against Apps Script
@@ -2744,7 +2839,10 @@ async function gsCall(action, extra){
     throw new Error(`${reason} (raw response started with: ${snippet})`);
   }
   if(!res.ok) throw new Error('HTTP '+res.status+': '+(json.error||raw.slice(0,200)));
-  if(!json.ok) throw new Error(json.error || 'Server returned an error');
+  if(!json.ok){
+    if(json.authError && action!=='login') forceLogout('Your session has expired — please log in again.');
+    throw new Error(json.error || 'Server returned an error');
+  }
   return json;
 }
 
@@ -2772,11 +2870,14 @@ async function gsPush(){
       columns: App.columns,
       forms: App.forms,
       statuses: App.settings.statuses,
+      logs: App.pendingLogs,
     };
     const r = await gsCall('push', payload);
     App.settings.googleSync.lastSyncedAt = r.serverTime || new Date().toISOString();
     App.deletedIds = [];
     await DB.setMeta('deletedIds', []);
+    App.pendingLogs = [];
+    await DB.setMeta('pendingLogs', []);
     scheduleSave();
     setGsStatus('synced');
     toast(`Synced ${changed.length} record(s) to Google Sheets`);
@@ -2861,6 +2962,215 @@ function refreshAllViews(){
   if(document.getElementById('page-forms').classList.contains('active')){
     if(activeForm) renderFormGrid(); else renderFormsList();
   }
+  if(document.getElementById('page-admin').classList.contains('active')) renderAdminPage();
+}
+
+/* ---------------------------------------------------------------
+   Admin page — user management + activity log (admin accounts only;
+   server-side requireAdmin_ enforces this regardless of what the UI
+   shows, so hiding the nav item is a convenience, not the boundary).
+---------------------------------------------------------------- */
+async function renderAdminPage(){
+  if(!App.session || App.session.role!=='admin') return;
+  renderUsersList();
+  renderLogsList();
+}
+async function renderUsersList(){
+  const host = document.getElementById('usersList');
+  host.innerHTML = '<p class="small muted">Loading…</p>';
+  try{
+    const r = await gsCall('listUsers', {});
+    if(!r.users.length){ host.innerHTML = '<p class="small muted">No users yet.</p>'; return; }
+    host.innerHTML = r.users.map(u=>`
+      <div class="card" style="margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+        <div>
+          <div style="font-weight:700;">${escapeAttr(u.username)}${u.username===App.session.username?' <span class="muted small">(you)</span>':''}</div>
+          <div class="small muted">${escapeAttr(u.role)} · ${u.active?'active':'disabled'}${u.createdAt?' · joined '+new Date(u.createdAt).toLocaleDateString():''}</div>
+        </div>
+        <div class="btn-row" style="flex-wrap:nowrap;">
+          <button class="btn btn-sm" data-toggle-user="${escapeAttr(u.username)}" data-active="${u.active?'0':'1'}">${u.active?'Disable':'Enable'}</button>
+          <button class="btn btn-sm btn-danger" data-delete-user="${escapeAttr(u.username)}">Delete</button>
+        </div>
+      </div>`).join('');
+    host.querySelectorAll('[data-toggle-user]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        btn.disabled = true;
+        try{
+          await gsCall('setUserActive', {username:btn.dataset.toggleUser, active: btn.dataset.active==='1'});
+          renderUsersList();
+        }catch(err){ toast('Failed: '+err.message); btn.disabled=false; }
+      };
+    });
+    host.querySelectorAll('[data-delete-user]').forEach(btn=>{
+      btn.onclick = ()=>{
+        const username = btn.dataset.deleteUser;
+        confirmModal(`Delete "${username}"?`, 'They will no longer be able to log in. This cannot be undone.', async ()=>{
+          try{
+            await gsCall('deleteUser', {username});
+            renderUsersList();
+          }catch(err){ toast('Failed: '+err.message); }
+        });
+      };
+    });
+  }catch(err){
+    host.innerHTML = `<p class="small muted">Couldn't load users: ${escapeAttr(err.message)}</p>`;
+  }
+}
+async function renderLogsList(){
+  const host = document.getElementById('logsList');
+  host.innerHTML = '<p class="small muted">Loading…</p>';
+  try{
+    const r = await gsCall('pullLogs', {limit:300});
+    if(!r.logs.length){ host.innerHTML = '<p class="small muted">No activity yet.</p>'; return; }
+    host.innerHTML = r.logs.map(l=>`
+      <div style="padding:8px 0; border-bottom:1px solid var(--border);">
+        <div class="small"><strong>${escapeAttr(l.username||'—')}</strong> <span class="muted">${escapeAttr(l.action||'')}</span></div>
+        ${l.details?`<div class="small muted">${escapeAttr(l.details)}</div>`:''}
+        <div class="small muted">${l.ts?new Date(l.ts).toLocaleString():''}</div>
+      </div>`).join('');
+  }catch(err){
+    host.innerHTML = `<p class="small muted">Couldn't load the activity log: ${escapeAttr(err.message)}</p>`;
+  }
+}
+function openNewUserModal(){
+  const host = document.getElementById('modalHost');
+  host.innerHTML = `<div class="modal-backdrop"><div class="modal bracket">
+    <div class="modal-header"><h3>+ New user</h3><button class="icon-btn" id="nuClose">✕</button></div>
+    <div class="field"><label>Username</label><input type="text" id="nuUsername" class="field-input" autocomplete="off"></div>
+    <div class="field"><label>Password</label><input type="password" id="nuPassword" class="field-input" autocomplete="new-password"></div>
+    <div class="field"><label>Role</label>
+      <select id="nuRole" class="field-input"><option value="user">User</option><option value="admin">Admin</option></select>
+    </div>
+    <p class="small" id="nuError" style="color:var(--danger); display:none;"></p>
+    <div class="btn-row" style="justify-content:flex-end; margin-top:10px;">
+      <button class="btn" id="nuCancel">Cancel</button>
+      <button class="btn btn-primary" id="nuCreate">Create user</button>
+    </div>
+  </div></div>`;
+  document.getElementById('nuClose').onclick = ()=>host.innerHTML='';
+  document.getElementById('nuCancel').onclick = ()=>host.innerHTML='';
+  document.getElementById('nuCreate').onclick = async ()=>{
+    const username = document.getElementById('nuUsername').value.trim();
+    const password = document.getElementById('nuPassword').value;
+    const role = document.getElementById('nuRole').value;
+    const errEl = document.getElementById('nuError'); errEl.style.display='none';
+    if(!username || !password){ errEl.textContent='Username and password are both required.'; errEl.style.display=''; return; }
+    try{
+      await gsCall('createUser', {newUsername:username, newPassword:password, newRole:role});
+      host.innerHTML='';
+      toast('User created');
+      renderUsersList();
+    }catch(err){
+      errEl.textContent = err.message; errEl.style.display='';
+    }
+  };
+}
+document.getElementById('btnNewUser').onclick = openNewUserModal;
+document.getElementById('btnRefreshLogs').onclick = renderLogsList;
+
+/* ---------------------------------------------------------------
+   Session management — login/logout, restoring a session on reopen,
+   and gating the app UI behind the login screen (standalone mode
+   only; the Console bridge below skips all of this).
+---------------------------------------------------------------- */
+function saveSessionToStorage(){ try{ sessionStorage.setItem('pt_session', JSON.stringify(App.session)); }catch(e){} }
+function clearSessionStorage(){ try{ sessionStorage.removeItem('pt_session'); }catch(e){} }
+function loadSessionFromStorage(){
+  try{ const raw = sessionStorage.getItem('pt_session'); return raw ? JSON.parse(raw) : null; }catch(e){ return null; }
+}
+function showLoginScreen(step){
+  document.getElementById('loginScreen').classList.remove('hidden');
+  document.getElementById('loginConnectStep').classList.toggle('hidden', step!=='connect');
+  document.getElementById('loginAuthStep').classList.toggle('hidden', step!=='auth');
+  if(step==='auth') document.getElementById('loginUsername').focus();
+}
+function hideLoginScreen(){ document.getElementById('loginScreen').classList.add('hidden'); }
+function forceLogout(message){
+  App.session = null;
+  clearSessionStorage();
+  if(message) toast(message);
+  showLoginScreen(gsConfigured() ? 'auth' : 'connect');
+}
+function updateSessionUI(){
+  const footer = document.getElementById('drawerFooter');
+  const adminBtn = document.getElementById('navAdminBtn');
+  if(App.session){
+    footer.innerHTML = `👤 ${escapeAttr(App.session.username)} <span class="muted">(${escapeAttr(App.session.role)})</span> · <button type="button" id="btnLogoutLink" style="background:none; border:none; color:var(--accent); text-decoration:underline; cursor:pointer; padding:0; font:inherit;">Log out</button>`;
+    document.getElementById('btnLogoutLink').onclick = doLogout;
+    adminBtn.classList.toggle('hidden', App.session.role!=='admin');
+  } else {
+    footer.textContent = 'Process Tracker · works fully offline';
+    adminBtn.classList.add('hidden');
+  }
+}
+async function doLogout(){
+  if(App.session){
+    try{ await gsCall('logout', {}); }catch(e){ /* best effort — clear locally regardless */ }
+  }
+  clearSessionStorage();
+  location.reload();
+}
+
+document.getElementById('btnLoginConnect').onclick = async ()=>{
+  const url = document.getElementById('loginGsUrl').value.trim();
+  const tok = document.getElementById('loginGsToken').value.trim();
+  const errEl = document.getElementById('loginConnectError'); errEl.style.display='none';
+  if(!url){ errEl.textContent='Paste your Apps Script Web App URL.'; errEl.style.display=''; return; }
+  App.settings.googleSync.url = url;
+  App.settings.googleSync.token = tok;
+  const btn = document.getElementById('btnLoginConnect');
+  btn.disabled=true; btn.textContent='Connecting…';
+  try{
+    await gsCall('ping');
+    await DB.setMeta('settings', App.settings);
+    showLoginScreen('auth');
+  }catch(err){
+    errEl.textContent = err.message; errEl.style.display='';
+  }finally{
+    btn.disabled=false; btn.textContent='Continue →';
+  }
+};
+document.getElementById('btnLoginChangeSheet').onclick = ()=>showLoginScreen('connect');
+document.getElementById('btnLoginSubmit').onclick = async ()=>{
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginAuthError'); errEl.style.display='none';
+  if(!username || !password){ errEl.textContent='Enter a username and password.'; errEl.style.display=''; return; }
+  const btn = document.getElementById('btnLoginSubmit');
+  btn.disabled=true; btn.textContent='Logging in…';
+  try{
+    const r = await gsCall('login', {username, password});
+    App.session = { token:r.token, username:r.username, role:r.role };
+    saveSessionToStorage();
+    hideLoginScreen();
+    if(r.founded) toast('Founding admin account created — welcome!');
+    await completeBoot();
+  }catch(err){
+    errEl.textContent = err.message; errEl.style.display='';
+  }finally{
+    btn.disabled=false; btn.textContent='Log in';
+  }
+};
+document.getElementById('loginPassword').addEventListener('keydown', (e)=>{ if(e.key==='Enter') document.getElementById('btnLoginSubmit').click(); });
+document.getElementById('loginGsUrl').addEventListener('keydown', (e)=>{ if(e.key==='Enter') document.getElementById('btnLoginConnect').click(); });
+
+async function completeBoot(){
+  document.getElementById('fontSize').value = App.settings.fontScale;
+  document.getElementById('autoSaveInterval').value = App.settings.autoSaveInterval;
+  setGsStatus(gsConfigured() ? (App.settings.googleSync.lastSyncedAt ? 'synced' : 'idle') : 'unconfigured');
+  updateSessionUI();
+
+  refreshAllViews();
+  goTo('dashboard');
+
+  const inConsole = typeof window.CONSOLE_API_URL === 'string' && typeof window.CONSOLE_TOKEN === 'string' && window.CONSOLE_TOKEN;
+  // First time this device connects with no local data yet, pull whatever's
+  // already in the Sheet so it doesn't look empty.
+  if(inConsole && !App.records.length && gsConfigured()){
+    gsPull();
+  }
+
+  registerServiceWorkerIfPossible();
 }
 
 async function boot(){
@@ -2869,6 +3179,7 @@ async function boot(){
   App.columns = await DB.getMeta('columns', []);
   App.forms = await DB.getMeta('forms', []);
   App.deletedIds = await DB.getMeta('deletedIds', []);
+  App.pendingLogs = await DB.getMeta('pendingLogs', []);
   const savedSettings = await DB.getMeta('settings', null);
   if(savedSettings){
     App.settings = {...App.settings, ...savedSettings};
@@ -2889,10 +3200,10 @@ async function boot(){
   // Console bridge: if this file was opened as a "tool" inside Ashish's
   // Console (Index.html injects these globals into the tool iframe),
   // auto-connect Google Sync using that same login session instead of
-  // asking for a URL/token by hand. Injected values always win over
-  // whatever was saved locally, since a fresh console session issues a
-  // fresh token. Opened on its own (outside the console), these globals
-  // simply don't exist and everything falls back to manual Settings.
+  // asking for a URL/token by hand, and skip this app's own login screen
+  // entirely — the console already handles who's who. Opened on its own
+  // (outside the console), these globals simply don't exist and the
+  // login screen below takes over instead.
   const inConsole = typeof window.CONSOLE_API_URL === 'string' && typeof window.CONSOLE_TOKEN === 'string' && window.CONSOLE_TOKEN;
   if(inConsole){
     const firstConnection = !App.settings.googleSync.url;
@@ -2900,22 +3211,32 @@ async function boot(){
     App.settings.googleSync.token = window.CONSOLE_TOKEN;
     if(firstConnection) App.settings.googleSync.autoSync = true;
     App.consoleUser = window.CONSOLE_USER || '';
+    await completeBoot();
+    return;
   }
 
-  document.getElementById('fontSize').value = App.settings.fontScale;
-  document.getElementById('autoSaveInterval').value = App.settings.autoSaveInterval;
-  setGsStatus(gsConfigured() ? (App.settings.googleSync.lastSyncedAt ? 'synced' : 'idle') : 'unconfigured');
-
-  refreshAllViews();
-  goTo('dashboard');
-
-  // First time this device connects via the console with no local data yet,
-  // pull whatever's already in the Sheet so it doesn't look empty.
-  if(inConsole && !App.records.length && gsConfigured()){
-    gsPull();
+  // Standalone usage: the app is gated behind login against whichever
+  // Google Sheet backend is configured — no Sheet connected yet means
+  // there's nothing to log into, so ask for that first.
+  if(!gsConfigured()){
+    showLoginScreen('connect');
+    return;
   }
-
-  registerServiceWorkerIfPossible();
+  const saved = loadSessionFromStorage();
+  if(saved && saved.token){
+    App.session = saved;
+    try{
+      const r = await gsCall('whoami', {});
+      App.session = { token:saved.token, username:r.username, role:r.role };
+      await completeBoot();
+      return;
+    }catch(err){
+      App.session = null;
+      showLoginScreen('auth');
+      return;
+    }
+  }
+  showLoginScreen('auth');
 }
 boot();
 
